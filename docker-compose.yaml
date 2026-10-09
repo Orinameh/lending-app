@@ -1,0 +1,65 @@
+# Local development only. Production must use managed Postgres/Redis,
+# TLS (DB_SSLMODE=require), secrets manager values, and no published DB ports.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER:-lending_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-lending_password}
+      POSTGRES_DB: ${DB_NAME:-lending_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-lending_user}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      # go.mod lives at the repo root, so the context must be root.
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      ENV: development
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      HMAC_KEY: ${HMAC_KEY:-}
+      JWT_SECRET: ${JWT_SECRET}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-lending_user}
+      DB_PASSWORD: ${DB_PASSWORD:-lending_password}
+      DB_NAME: ${DB_NAME:-lending_db}
+      DB_SSLMODE: disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      TRUST_PROXY: "false"
+      PORT: 8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  postgres_data:
+  redis_data:

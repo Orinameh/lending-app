@@ -1,0 +1,22 @@
+# Secrets — never commit real values
+.env
+.env.local
+.env.*.local
+
+# Build output
+backend/bin/
+bin/
+*.exe
+
+# Go
+*.test
+*.out
+coverage.html
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Docker
+.dockerignore
