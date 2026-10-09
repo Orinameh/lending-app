@@ -24,14 +24,7 @@ func (h *RepaymentHandler) SetTrustProxy(v bool) { h.trustProxy = v }
 // POST /api/v1/loans/{id}/repay
 func (h *RepaymentHandler) MakeRepayment(w http.ResponseWriter, r *http.Request) {
 	userID, _ := ctxUserID(r)
-	// path: /api/v1/loans/{id}/repay
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	// parts = [api, v1, loans, {id}, repay]
-	if len(parts) < 5 {
-		writeError(w, http.StatusBadRequest, "INVALID_PATH", "invalid path")
-		return
-	}
-	loanID, err := uuid.Parse(parts[3])
+	loanID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ID", "invalid loan id")
 		return
@@ -87,12 +80,7 @@ func (h *RepaymentHandler) MakeRepayment(w http.ResponseWriter, r *http.Request)
 // GET /api/v1/loans/{id}/repayments
 func (h *RepaymentHandler) GetRepaymentHistory(w http.ResponseWriter, r *http.Request) {
 	userID, _ := ctxUserID(r)
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	if len(parts) < 5 {
-		writeError(w, http.StatusBadRequest, "INVALID_PATH", "invalid path")
-		return
-	}
-	loanID, err := uuid.Parse(parts[3])
+	loanID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ID", "invalid loan id")
 		return

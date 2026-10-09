@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"lending-app/backend/internal/config"
 	"lending-app/backend/internal/domain/entities"
 	"lending-app/backend/internal/repositories"
 	"strings"
@@ -18,6 +19,7 @@ type LoanService struct {
 	loanRepo      *repositories.LoanRepository
 	creditRepo    *repositories.CreditRepository
 	repaymentRepo *repositories.RepaymentRepository
+	pricing       config.Pricing
 }
 
 func NewLoanService(
@@ -25,8 +27,9 @@ func NewLoanService(
 	loanRepo *repositories.LoanRepository,
 	creditRepo *repositories.CreditRepository,
 	repaymentRepo *repositories.RepaymentRepository,
+	pricing config.Pricing,
 ) *LoanService {
-	return &LoanService{db: db, loanRepo: loanRepo, creditRepo: creditRepo, repaymentRepo: repaymentRepo}
+	return &LoanService{db: db, loanRepo: loanRepo, creditRepo: creditRepo, repaymentRepo: repaymentRepo, pricing: pricing}
 }
 
 type LoanApplicationRequest struct {
@@ -44,19 +47,10 @@ var (
 	ErrLoanLimit      = errors.New("loan limit exceeded")
 )
 
-// PricedRate is the single server-side pricing control. Borrowers must NOT
-// self-price (previous InterestRate request field removed). Tier by risk band.
-func PricedRate(riskScore int) decimal.Decimal {
-	switch {
-	case riskScore >= 740:
-		return decimal.NewFromFloat(12.0)
-	case riskScore >= 670:
-		return decimal.NewFromFloat(18.0)
-	case riskScore >= 580:
-		return decimal.NewFromFloat(24.0)
-	default:
-		return decimal.NewFromFloat(30.0)
-	}
+// pricedRate is the single server-side pricing control, driven by
+// config.yaml bands. Borrowers must NOT self-price.
+func (s *LoanService) pricedRate(riskScore int) decimal.Decimal {
+	return s.pricing.RateFor(riskScore)
 }
 
 func (s *LoanService) ApplyForLoan(ctx context.Context, userID uuid.UUID, req *LoanApplicationRequest) (*entities.Loan, error) {
@@ -82,7 +76,7 @@ func (s *LoanService) ApplyForLoan(ctx context.Context, userID uuid.UUID, req *L
 	}
 
 	riskScore, decision := calculateRisk(creditReport, req)
-	rate := PricedRate(riskScore)
+	rate := s.pricedRate(riskScore)
 	monthly, total, interest := calculateLoanTerms(req.Amount, rate, req.TermMonths)
 	effectiveAPR := effectiveAnnualRate(rate)
 

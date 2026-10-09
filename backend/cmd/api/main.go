@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"lending-app/backend/internal/api"
+	"lending-app/backend/internal/config"
 	"lending-app/backend/internal/handlers"
 	"lending-app/backend/internal/infrastructure/logger"
 	"lending-app/backend/internal/middleware"
@@ -36,6 +38,7 @@ type App struct {
 
 	encryptor   *crypto.EncryptionService
 	authService *services.AuthService
+	policy      config.Config
 }
 
 type Config struct {
@@ -127,6 +130,21 @@ func main() {
 	if err != nil {
 		app.logger.Fatal("env validation", "error", err)
 	}
+
+	// Money policy from config.yaml (validated, fail fast). Secrets stay in env.
+	// Empty path = CONFIG_PATH, else backend/config.yaml (run from repo root;
+	// the Docker image sets CONFIG_PATH=/srv/config.yaml). A missing file
+	// fails the boot — policy must never silently default with real money.
+	policy, policySource, err := config.Load("")
+	if err != nil {
+		app.logger.Fatal("config", "error", err)
+	}
+	app.policy = policy
+	app.logger.Info("policy loaded",
+		"source", policySource,
+		"bands", len(policy.Pricing.Bands),
+		"lateFeeRate", policy.Fees.LateFeeRate.String(),
+		"lateFeeCap", policy.Fees.LateFeeCap.String())
 
 	enc, err := crypto.GetEncryptionService()
 	if err != nil {
@@ -316,9 +334,9 @@ func (app *App) setupRoutes(cfg *Config) {
 		jwtSvc = auth.NewJWTServiceWithPrevious(cfg.JWTSecret, cfg.JWTPrevSecret)
 	}
 	app.authService = services.NewAuthService(userRepo, refreshRepo, resetRepo, jwtSvc)
-	loanSvc := services.NewLoanService(app.db, loanRepo, creditRepo, repaymentRepo)
+	loanSvc := services.NewLoanService(app.db, loanRepo, creditRepo, repaymentRepo, app.policy.Pricing)
 	creditSvc := services.NewCreditService(creditRepo, userRepo, loanRepo, repaymentRepo)
-	repaymentSvc := services.NewRepaymentService(app.db, repaymentRepo, loanRepo)
+	repaymentSvc := services.NewRepaymentService(app.db, repaymentRepo, loanRepo, app.policy.Fees)
 	collectionSvc := services.NewCollectionService(collectionRepo, loanRepo, repaymentRepo)
 	collectionSvc.WithDB(app.db)
 	collectionSvc.WithRepaymentSvc(repaymentSvc)
@@ -327,92 +345,28 @@ func (app *App) setupRoutes(cfg *Config) {
 
 	// Handlers
 	authH := handlers.NewAuthHandler(app.authService, auditSvc, app.encryptor)
-	authH.SetTrustProxy(cfg.TrustProxy)
 	loanH := handlers.NewLoanHandler(loanSvc, auditSvc)
-	loanH.SetTrustProxy(cfg.TrustProxy)
 	creditH := handlers.NewCreditHandler(creditSvc, auditSvc)
-	creditH.SetTrustProxy(cfg.TrustProxy)
 	repaymentH := handlers.NewRepaymentHandler(repaymentSvc, auditSvc)
-	repaymentH.SetTrustProxy(cfg.TrustProxy)
 	collectionH := handlers.NewCollectionHandler(collectionSvc, auditSvc)
-	collectionH.SetTrustProxy(cfg.TrustProxy)
 	adminH := handlers.NewAdminHandler(adminSvc, auditSvc)
-	adminH.SetTrustProxy(cfg.TrustProxy)
 	healthH := handlers.NewHealthHandler(app.encryptor, app.db, app.redis)
 
-	public := http.NewServeMux()
-	public.HandleFunc("GET /health", healthH.Check)
-	public.HandleFunc("POST /api/v1/auth/register", authH.Register)
-	public.HandleFunc("POST /api/v1/auth/login", authH.Login)
-	public.HandleFunc("POST /api/v1/auth/refresh", authH.RefreshToken)
-	public.HandleFunc("POST /api/v1/auth/logout", authH.Logout)
-	public.HandleFunc("POST /api/v1/auth/forgot-password", authH.ForgotPassword)
-	public.HandleFunc("POST /api/v1/auth/reset-password", authH.ResetPassword)
-
-	protected := http.NewServeMux()
-	protected.HandleFunc("GET /api/v1/profile", authH.GetProfile)
-	protected.HandleFunc("PUT /api/v1/profile", authH.UpdateProfile)
-
-	protected.HandleFunc("POST /api/v1/loans", loanH.CreateLoan)
-	protected.HandleFunc("GET /api/v1/loans", loanH.GetUserLoans)
-	protected.HandleFunc("GET /api/v1/loans/{id}", loanH.GetLoanDetails)
-	protected.HandleFunc("POST /api/v1/loans/{id}/repay", repaymentH.MakeRepayment)
-	protected.HandleFunc("GET /api/v1/loans/{id}/repayments", repaymentH.GetRepaymentHistory)
-
-	protected.HandleFunc("GET /api/v1/credit/score", creditH.GetCreditScore)
-	protected.HandleFunc("GET /api/v1/credit/report", creditH.GetCreditReport)
-	protected.HandleFunc("POST /api/v1/credit/refresh", creditH.RefreshCreditReport)
-
-	protected.HandleFunc("GET /api/v1/collections", collectionH.GetUserCollections)
-	protected.HandleFunc("POST /api/v1/collections/{id}/payment-arrangement", collectionH.CreatePaymentArrangement)
-
-	admin := http.NewServeMux()
-	admin.HandleFunc("GET /api/v1/admin/dashboard", adminH.GetDashboardStats)
-	admin.HandleFunc("GET /api/v1/admin/users", adminH.GetUsers)
-	admin.HandleFunc("PUT /api/v1/admin/users/{id}/status", adminH.UpdateUserStatus)
-	admin.HandleFunc("PUT /api/v1/admin/users/{id}/role", adminH.UpdateUserRole)
-	admin.HandleFunc("POST /api/v1/admin/users/{id}/kyc/approve", adminH.ApproveKYC)
-	admin.HandleFunc("POST /api/v1/admin/users/{id}/kyc/reject", adminH.RejectKYC)
-
-	admin.HandleFunc("GET /api/v1/admin/loans", loanH.AdminListLoans)
-	admin.HandleFunc("PUT /api/v1/admin/loans/{id}/status", loanH.AdminUpdateStatus)
-	admin.HandleFunc("POST /api/v1/admin/loans/{id}/disburse", loanH.AdminDisburse)
-
-	admin.HandleFunc("GET /api/v1/admin/collections", collectionH.AdminList)
-	admin.HandleFunc("PUT /api/v1/admin/collections/{id}/status", collectionH.AdminUpdateStatus)
-	admin.HandleFunc("POST /api/v1/admin/collections/{id}/assign", collectionH.AdminAssign)
-	admin.HandleFunc("POST /api/v1/admin/collections/run-overdue-scan", collectionH.AdminRunOverdueScan)
-
-	// Middleware stack (order: requestID → logging → security → rate limit → auth)
-	authMW := middleware.NewAuthMiddleware(app.authService)
-	adminMW := middleware.NewAdminMiddleware()
-	rl := middleware.NewRateLimiter(app.redis)
-	rl.SetTrustProxy(cfg.TrustProxy)
-	lm := middleware.NewLoggerMiddleware(app.logger)
-	sm := middleware.NewSecurityMiddleware()
-
-	wrap := func(h http.Handler) http.Handler {
-		return middleware.RequestID(lm.Wrap(sm.Wrap(rl.Wrap(h))))
-	}
-	wrapAuth := func(h http.Handler) http.Handler {
-		return middleware.RequestID(lm.Wrap(sm.Wrap(rl.Wrap(authMW.Wrap(h)))))
-	}
-	wrapAdmin := func(h http.Handler) http.Handler {
-		return middleware.RequestID(lm.Wrap(sm.Wrap(rl.Wrap(authMW.Wrap(adminMW.Wrap(h))))))
-	}
-
-	mux := http.NewServeMux()
-	mux.Handle("/health", wrap(http.HandlerFunc(healthH.Check)))
-	mux.Handle("/api/v1/auth/", wrap(http.StripPrefix("", public)))
-	mux.Handle("/api/v1/loans", wrapAuth(protected))
-	mux.Handle("/api/v1/loans/", wrapAuth(protected))
-	mux.Handle("/api/v1/credit/", wrapAuth(protected))
-	mux.Handle("/api/v1/collections", wrapAuth(protected))
-	mux.Handle("/api/v1/collections/", wrapAuth(protected))
-	mux.Handle("/api/v1/profile", wrapAuth(protected))
-	mux.Handle("/api/v1/admin/", wrapAdmin(admin))
-
-	app.router = mux
+	app.router = api.NewRouter(
+		api.Deps{
+			Auth: authH, Loan: loanH, Credit: creditH,
+			Repayment: repaymentH, Collection: collectionH,
+			Admin: adminH, Health: healthH,
+		},
+		api.MW{
+			Logger:      middleware.NewLoggerMiddleware(app.logger),
+			Security:    middleware.NewSecurityMiddleware(),
+			RateLimiter: middleware.NewRateLimiter(app.redis),
+			Auth:        middleware.NewAuthMiddleware(app.authService),
+			Admin:       middleware.NewAdminMiddleware(),
+		},
+		cfg.TrustProxy,
+	)
 }
 
 func exeDirJoin(exe, sub string) string {

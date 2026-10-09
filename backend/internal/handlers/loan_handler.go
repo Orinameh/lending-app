@@ -75,8 +75,7 @@ func (h *LoanHandler) GetUserLoans(w http.ResponseWriter, r *http.Request) {
 
 func (h *LoanHandler) GetLoanDetails(w http.ResponseWriter, r *http.Request) {
 	userID, _ := ctxUserID(r)
-	idStr := strings.TrimPrefix(r.URL.Path, "/api/v1/loans/")
-	id, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ID", "invalid loan id")
 		return
@@ -118,9 +117,7 @@ func (h *LoanHandler) AdminListLoans(w http.ResponseWriter, r *http.Request) {
 // Admin: update status (state-machine enforced in service)
 func (h *LoanHandler) AdminUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	actorID, _ := ctxUserID(r)
-	idStr := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/loans/")
-	idStr = strings.TrimSuffix(idStr, "/status")
-	id, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ID", "invalid loan id")
 		return
@@ -148,9 +145,7 @@ func (h *LoanHandler) AdminUpdateStatus(w http.ResponseWriter, r *http.Request) 
 // Admin: disburse (approved → disbursed + schedule anchored at funding)
 func (h *LoanHandler) AdminDisburse(w http.ResponseWriter, r *http.Request) {
 	actorID, _ := ctxUserID(r)
-	idStr := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/loans/")
-	idStr = strings.TrimSuffix(idStr, "/disburse")
-	id, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ID", "invalid loan id")
 		return

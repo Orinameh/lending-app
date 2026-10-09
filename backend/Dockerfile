@@ -21,8 +21,11 @@ WORKDIR /srv
 # --chown avoids a separate chown layer (which would duplicate file bytes).
 COPY --from=builder --chown=apiuser:apiuser /api ./api
 COPY --from=builder --chown=apiuser:apiuser /src/backend/migrations ./migrations
+COPY --from=builder --chown=apiuser:apiuser /src/backend/config.yaml ./config.yaml
 USER apiuser
 EXPOSE 8080
+# Policy file lives at /srv/config.yaml in the image; Load("") finds it here.
+ENV CONFIG_PATH=/srv/config.yaml
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD wget -qO- http://127.0.0.1:8080/health | grep -q '"status":"ok"' || exit 1
 ENTRYPOINT ["./api"]

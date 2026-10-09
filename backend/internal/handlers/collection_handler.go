@@ -6,7 +6,6 @@ import (
 	"lending-app/backend/internal/services"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -60,9 +59,7 @@ func (h *CollectionHandler) AdminList(w http.ResponseWriter, r *http.Request) {
 // Admin: update status
 func (h *CollectionHandler) AdminUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	actorID, _ := ctxUserID(r)
-	idStr := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/collections/")
-	idStr = strings.TrimSuffix(idStr, "/status")
-	id, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ID", "invalid collection id")
 		return
@@ -88,9 +85,7 @@ func (h *CollectionHandler) AdminUpdateStatus(w http.ResponseWriter, r *http.Req
 // Admin: assign to agent
 func (h *CollectionHandler) AdminAssign(w http.ResponseWriter, r *http.Request) {
 	actorID, _ := ctxUserID(r)
-	idStr := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/collections/")
-	idStr = strings.TrimSuffix(idStr, "/assign")
-	id, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ID", "invalid collection id")
 		return
@@ -119,13 +114,7 @@ func (h *CollectionHandler) AdminAssign(w http.ResponseWriter, r *http.Request) 
 // User: create payment arrangement
 func (h *CollectionHandler) CreatePaymentArrangement(w http.ResponseWriter, r *http.Request) {
 	userID, _ := ctxUserID(r)
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	// /api/v1/collections/{id}/payment-arrangement
-	if len(parts) < 5 {
-		writeError(w, http.StatusBadRequest, "INVALID_PATH", "invalid path")
-		return
-	}
-	id, err := uuid.Parse(parts[3])
+	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ID", "invalid collection id")
 		return

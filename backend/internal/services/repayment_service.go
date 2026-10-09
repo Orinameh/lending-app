@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"lending-app/backend/internal/config"
 	"lending-app/backend/internal/domain/entities"
 	"lending-app/backend/internal/repositories"
 	"strings"
@@ -13,19 +14,16 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-var (
-	lateFeeRate = decimal.NewFromFloat(0.05)
-	lateFeeCap  = decimal.NewFromInt(5000)
-)
-
 type RepaymentService struct {
 	db            *sql.DB
 	repaymentRepo *repositories.RepaymentRepository
 	loanRepo      *repositories.LoanRepository
+	lateFeeRate   decimal.Decimal
+	lateFeeCap    decimal.Decimal
 }
 
-func NewRepaymentService(db *sql.DB, rr *repositories.RepaymentRepository, lr *repositories.LoanRepository) *RepaymentService {
-	return &RepaymentService{db: db, repaymentRepo: rr, loanRepo: lr}
+func NewRepaymentService(db *sql.DB, rr *repositories.RepaymentRepository, lr *repositories.LoanRepository, fees config.Fees) *RepaymentService {
+	return &RepaymentService{db: db, repaymentRepo: rr, loanRepo: lr, lateFeeRate: fees.LateFeeRate, lateFeeCap: fees.LateFeeCap}
 }
 
 type RepaymentRequest struct {
@@ -193,8 +191,9 @@ func (s *RepaymentService) MakeRepayment(ctx context.Context, userID, loanID uui
 	return result, nil
 }
 
-// AccrueLateFees assesses a one-time 5% fee (capped at 5,000) on installments
-// past due with no fee yet. Called by the collections scan.
+// AccrueLateFees assesses a one-time configured fee (rate × installment,
+// capped) on installments past due with no fee yet. Called by the
+// collections scan.
 func (s *RepaymentService) AccrueLateFees(ctx context.Context, loanID uuid.UUID, now time.Time) (int, error) {
 	payments, err := s.repaymentRepo.GetByLoanID(ctx, loanID)
 	if err != nil {
@@ -211,9 +210,9 @@ func (s *RepaymentService) AccrueLateFees(ctx context.Context, loanID uuid.UUID,
 		if !p.LateFee.IsZero() {
 			continue
 		}
-		fee := p.Amount.Mul(lateFeeRate).Round(2)
-		if fee.GreaterThan(lateFeeCap) {
-			fee = lateFeeCap
+		fee := p.Amount.Mul(s.lateFeeRate).Round(2)
+		if fee.GreaterThan(s.lateFeeCap) {
+			fee = s.lateFeeCap
 		}
 		p.LateFee = fee
 		if p.Status == entities.RepaymentStatusPending {

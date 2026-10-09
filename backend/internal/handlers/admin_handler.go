@@ -4,7 +4,6 @@ import (
 	"lending-app/backend/internal/services"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/google/uuid"
 )
@@ -58,9 +57,7 @@ func (h *AdminHandler) GetUsers(w http.ResponseWriter, r *http.Request) {
 // PUT /api/v1/admin/users/{id}/status
 func (h *AdminHandler) UpdateUserStatus(w http.ResponseWriter, r *http.Request) {
 	actorID, _ := ctxUserID(r)
-	idStr := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/users/")
-	idStr = strings.TrimSuffix(idStr, "/status")
-	id, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ID", "invalid user id")
 		return
@@ -89,9 +86,7 @@ func (h *AdminHandler) UpdateUserStatus(w http.ResponseWriter, r *http.Request) 
 // PUT /api/v1/admin/users/{id}/role
 func (h *AdminHandler) UpdateUserRole(w http.ResponseWriter, r *http.Request) {
 	actorID, _ := ctxUserID(r)
-	idStr := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/users/")
-	idStr = strings.TrimSuffix(idStr, "/role")
-	id, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ID", "invalid user id")
 		return
@@ -124,9 +119,7 @@ func (h *AdminHandler) UpdateUserRole(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/admin/users/{id}/kyc/approve
 func (h *AdminHandler) ApproveKYC(w http.ResponseWriter, r *http.Request) {
 	actorID, _ := ctxUserID(r)
-	idStr := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/users/")
-	idStr = strings.TrimSuffix(idStr, "/kyc/approve")
-	id, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ID", "invalid user id")
 		return
@@ -145,9 +138,7 @@ func (h *AdminHandler) ApproveKYC(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/admin/users/{id}/kyc/reject
 func (h *AdminHandler) RejectKYC(w http.ResponseWriter, r *http.Request) {
 	actorID, _ := ctxUserID(r)
-	idStr := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/users/")
-	idStr = strings.TrimSuffix(idStr, "/kyc/reject")
-	id, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ID", "invalid user id")
 		return

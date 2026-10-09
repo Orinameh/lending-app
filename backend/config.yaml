@@ -1,0 +1,19 @@
+# Money policy — non-secret, safe to commit. Secrets stay in env.
+# Rates are nominal APR (% per annum). Bands must descend by minScore and
+# the last band must cover the score floor (300).
+pricing:
+  bands:
+    - minScore: 740
+      rate: 12
+    - minScore: 670
+      rate: 18
+    - minScore: 580
+      rate: 24
+    - minScore: 0
+      rate: 30
+
+# Late fee: one-time fraction of the installment, capped per installment.
+# lateFeeRate is a FRACTION (0.05 = 5%), not percent.
+fees:
+  lateFeeRate: 0.05
+  lateFeeCap: 5000

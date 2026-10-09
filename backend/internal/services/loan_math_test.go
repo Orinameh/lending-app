@@ -3,6 +3,7 @@ package services
 import (
 	"testing"
 
+	"lending-app/backend/internal/config"
 	"lending-app/backend/internal/domain/entities"
 
 	"github.com/shopspring/decimal"
@@ -94,10 +95,14 @@ func TestRepaymentBalanceDue(t *testing.T) {
 }
 
 func TestServerSidePricingBands(t *testing.T) {
-	if !PricedRate(760).Equal(decimal.NewFromFloat(12.0)) {
+	pricing := config.Default().Pricing
+	if !pricing.RateFor(760).Equal(decimal.NewFromFloat(12.0)) {
 		t.Fatal("top band must price at 12%")
 	}
-	if !PricedRate(500).Equal(decimal.NewFromFloat(30.0)) {
+	if !pricing.RateFor(500).Equal(decimal.NewFromFloat(30.0)) {
 		t.Fatal("bottom band must price at 30%")
+	}
+	if !pricing.RateFor(700).Equal(decimal.NewFromFloat(18.0)) {
+		t.Fatal("670-739 band must price at 18%")
 	}
 }
