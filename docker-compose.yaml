@@ -2,13 +2,15 @@
 # TLS (DB_SSLMODE=require), secrets manager values, and no published DB ports.
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     environment:
       POSTGRES_USER: ${DB_USER:-lending_user}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-lending_password}
       POSTGRES_DB: ${DB_NAME:-lending_db}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # PG18 changed the data dir to /var/lib/postgresql (was .../data).
+      # Fresh volume required — do NOT reuse a PG17 volume here.
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-lending_user}"]
       interval: 5s
@@ -16,7 +18,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis_data:/data
