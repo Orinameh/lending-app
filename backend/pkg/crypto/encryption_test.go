@@ -120,6 +120,23 @@ func TestLegacyUnprefixedFallback(t *testing.T) {
 	if dec, err := svcB.Decrypt(legacy); err != nil || dec != "legacy-row" {
 		t.Fatalf("legacy fallback failed: %q %v", dec, err)
 	}
+
+	// Regression: legacy base64 starting with 'v' (1/64 nonces) must take
+	// the legacy path, not the envelope path. Loop to find one deterministically.
+	found := false
+	for i := 0; i < 1000 && !found; i++ {
+		enc, _ := svcA.Encrypt("legacy-row")
+		raw := strings.TrimPrefix(enc, "v"+svcA.PrimaryVersion()+":")
+		if strings.HasPrefix(raw, "v") {
+			found = true
+			if dec, err := svcB.Decrypt(raw); err != nil || dec != "legacy-row" {
+				t.Fatalf("v-leading legacy fallback failed: %q %v", dec, err)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("could not produce v-leading legacy value in 1000 tries")
+	}
 }
 
 func TestUnknownVersionRejected(t *testing.T) {

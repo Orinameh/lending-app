@@ -254,7 +254,10 @@ func (e *EncryptionService) Decrypt(encryptedData string) (string, error) {
 	if encryptedData == "" {
 		return "", nil
 	}
-	// Versioned envelope: match the key ID by identity.
+	// Versioned envelope: match the key ID by identity. The match requires
+	// the full `v<8hex>:` pattern — legacy base64 can itself start with 'v'
+	// (1/64 nonces), and base64 never contains ':', so anything without the
+	// full pattern is unambiguously a legacy value.
 	if id := VersionOf(encryptedData); id != "" {
 		rest := encryptedData[len(id)+2:]
 		switch {
@@ -265,9 +268,6 @@ func (e *EncryptionService) Decrypt(encryptedData string) (string, error) {
 		default:
 			return "", fmt.Errorf("unknown key id v%s", id)
 		}
-	}
-	if strings.HasPrefix(encryptedData, "v") {
-		return "", errors.New("malformed ciphertext envelope")
 	}
 	// Legacy unprefixed value: try primary, then previous.
 	if s, err := e.openWith(e.primary.gcm, encryptedData); err == nil {

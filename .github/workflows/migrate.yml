@@ -14,7 +14,13 @@ name: Migrate Check
 
 on:
   push:
+    paths:
+      - "backend/migrations/**"
+      - ".github/workflows/migrate.yml"
   pull_request:
+    paths:
+      - "backend/migrations/**"
+      - ".github/workflows/migrate.yml"
   workflow_dispatch:
 
 env:
