@@ -3,7 +3,10 @@
 # All database credentials come from GitHub Secrets — nothing sensitive
 # lives in this file. Required secrets (repo Settings → Secrets → Actions):
 #   CI_POSTGRES_USER, CI_POSTGRES_PASSWORD, CI_POSTGRES_DB
-# Repos/forks without them skip the migration steps automatically.
+# Repos/forks without them skip the migration check with a notice.
+# (Postgres is started via docker inside the gated step — not as a service —
+# because service containers boot before any step can gate them, and the
+# image refuses to start without a password.)
 #
 # GOOSE_VERSION must stay in sync with the Makefile.
 
@@ -21,48 +24,36 @@ jobs:
   migrate:
     runs-on: ubuntu-latest
 
-    services:
-      postgres:
-        image: postgres:18-alpine
-        env:
-          POSTGRES_USER: ${{ secrets.CI_POSTGRES_USER }}
-          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
-          POSTGRES_DB: ${{ secrets.CI_POSTGRES_DB }}
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
     steps:
       - uses: actions/checkout@v4
 
-      # secrets context is not allowed in job-level `if`; gate here instead
-      # (only a boolean leaves this step — secret values never do).
-      - id: gate
-        run: |
-          if [ -z "${{ secrets.CI_POSTGRES_PASSWORD }}" ]; then
-            echo "Secrets not configured; skipping migration check."
-            echo "has_secrets=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_secrets=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: actions/setup-go@v5
-        if: steps.gate.outputs.has_secrets == 'true'
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Migrate (goose, pinned)
-        if: steps.gate.outputs.has_secrets == 'true'
         env:
           PGUSER: ${{ secrets.CI_POSTGRES_USER }}
           PGPASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
           PGDATABASE: ${{ secrets.CI_POSTGRES_DB }}
         run: |
+          if [ -z "$PGPASSWORD" ]; then
+            echo "DB secrets not configured; skipping migration check."
+            exit 0
+          fi
+          docker run -d --rm --name ci-postgres \
+            -e POSTGRES_USER="$PGUSER" \
+            -e POSTGRES_PASSWORD="$PGPASSWORD" \
+            -e POSTGRES_DB="$PGDATABASE" \
+            -p 5432:5432 postgres:18-alpine
+          trap "docker stop ci-postgres > /dev/null 2>&1 || true" EXIT
+          for _ in $(seq 1 30); do
+            if docker exec ci-postgres pg_isready -U "$PGUSER" > /dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
           go install github.com/pressly/goose/v3/cmd/goose@$GOOSE_VERSION
           DATABASE_URL="postgres://$PGUSER:$PGPASSWORD@localhost:5432/$PGDATABASE?sslmode=disable"
           $(go env GOPATH)/bin/goose -dir backend/migrations postgres "$DATABASE_URL" up
