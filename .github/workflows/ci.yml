@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Keep in sync with GOOSE_VERSION in the Makefile.
+env:
+  GOOSE_VERSION: v3.28.0
+  DATABASE_URL: postgres://lending_user:lending_password@localhost:5432/lending_db?sslmode=disable
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: lending_user
+          POSTGRES_PASSWORD: lending_password
+          POSTGRES_DB: lending_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lending_user"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./... -count=1
+
+      - name: Build
+        run: go build ./...
+
+      - name: Migrate (goose, pinned)
+        run: |
+          go install github.com/pressly/goose/v3/cmd/goose@$GOOSE_VERSION
+          $(go env GOPATH)/bin/goose -dir backend/migrations postgres "$DATABASE_URL" up
+          $(go env GOPATH)/bin/goose -dir backend/migrations postgres "$DATABASE_URL" status
+
+      - name: Docker build
+        run: docker build -f backend/Dockerfile -t lending-api:ci .
