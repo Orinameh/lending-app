@@ -189,8 +189,13 @@ type LoginResponse struct {
 func (s *AuthService) Login(ctx context.Context, req *LoginRequest) (*LoginResponse, error) {
 	user, err := s.userRepo.GetByEmail(ctx, req.Email)
 	if err != nil {
-		// Generic: do not reveal whether the email exists.
-		return nil, ErrInvalidCredentials
+		// Generic only for unknown emails. Infrastructure failures must
+		// propagate as 500s — never disguised as credential failures,
+		// or outages become invisible in auth metrics.
+		if errors.Is(err, repositories.ErrNotFound) {
+			return nil, ErrInvalidCredentials
+		}
+		return nil, err
 	}
 	if !user.IsActive {
 		return nil, ErrAccountDisabled
@@ -262,7 +267,10 @@ func (s *AuthService) RefreshToken(ctx context.Context, refreshToken string) (*L
 	}
 	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
-		return nil, errors.New("invalid refresh token")
+		if errors.Is(err, repositories.ErrNotFound) {
+			return nil, errors.New("invalid refresh token")
+		}
+		return nil, err
 	}
 	if !user.IsActive {
 		return nil, ErrAccountDisabled

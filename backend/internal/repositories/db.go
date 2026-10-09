@@ -58,6 +58,7 @@ const (
 	LockMigrations   int64 = 0x1e4d1_0001
 	LockOverdueScan  int64 = 0x1e4d1_0002
 	LockCreditGen    int64 = 0x1e4d1_0003
+	LockRekey        int64 = 0x1e4d1_0004
 )
 
 // TryAdvisoryLock takes a session-level pg advisory lock without blocking.

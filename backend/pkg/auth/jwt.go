@@ -16,10 +16,18 @@ const (
 
 type JWTService struct {
 	secret []byte
+	prev   []byte
 }
 
 func NewJWTService(secret string) *JWTService {
 	return &JWTService{secret: []byte(secret)}
+}
+
+// NewJWTServiceWithPrevious accepts the previous secret during rotation:
+// new tokens sign with secret; validation also honors prev. Deploy new
+// secret everywhere, then drop the previous after max refresh TTL.
+func NewJWTServiceWithPrevious(secret, previous string) *JWTService {
+	return &JWTService{secret: []byte(secret), prev: []byte(previous)}
 }
 
 type Claims struct {
@@ -77,8 +85,19 @@ func (j *JWTService) keyFunc(t *jwt.Token) (interface{}, error) {
 	return j.secret, nil
 }
 
+func (j *JWTService) prevKeyFunc(t *jwt.Token) (interface{}, error) {
+	if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+		return nil, errors.New("invalid signing method")
+	}
+	return j.prev, nil
+}
+
 func (j *JWTService) ValidateToken(tokenString string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, j.keyFunc)
+	if err != nil && len(j.prev) > 0 {
+		// Rotation window: retry against the previous secret.
+		token, err = jwt.ParseWithClaims(tokenString, &Claims{}, j.prevKeyFunc)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -94,6 +113,9 @@ func (j *JWTService) ValidateToken(tokenString string) (*Claims, error) {
 
 func (j *JWTService) ValidateRefreshToken(tokenString string) (userID uuid.UUID, jti string, err error) {
 	token, err := jwt.ParseWithClaims(tokenString, &jwt.RegisteredClaims{}, j.keyFunc)
+	if err != nil && len(j.prev) > 0 {
+		token, err = jwt.ParseWithClaims(tokenString, &jwt.RegisteredClaims{}, j.prevKeyFunc)
+	}
 	if err != nil {
 		return uuid.Nil, "", err
 	}

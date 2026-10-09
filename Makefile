@@ -10,6 +10,8 @@ help:
 	@echo "migrate-up     - apply goose migrations"
 	@echo "migrate-down   - rollback one migration"
 	@echo "migrate-install- install pinned goose CLI ($(GOOSE_VERSION))"
+	@echo "reencrypt-dry  - dry-run PII re-encryption to primary key"
+	@echo "reencrypt      - re-encrypt all PII to primary key (needs previous key set)"
 	@echo "test           - go test ./..."
 	@echo "clean          - remove volumes and binaries"
 	@echo "key            - generate a new ENCRYPTION_KEY"
@@ -34,6 +36,12 @@ migrate-down:
 
 migrate-install:
 	go install github.com/pressly/goose/v3/cmd/goose@$(GOOSE_VERSION)
+
+reencrypt-dry:
+	go run ./backend/cmd/api -reencrypt -dry-run
+
+reencrypt:
+	go run ./backend/cmd/api -reencrypt
 
 test:
 	cd backend && go test ./... -v -cover

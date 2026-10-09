@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"flag"
 	"fmt"
 	"lending-app/backend/internal/handlers"
 	"lending-app/backend/internal/infrastructure/logger"
@@ -49,6 +50,7 @@ type Config struct {
 	RedisAddr   string
 	RedisPass   string
 	JWTSecret   string
+	JWTPrevSecret string
 	TrustProxy  bool
 	MigrateLock bool
 }
@@ -66,6 +68,9 @@ func loadConfig() (*Config, error) {
 	}
 	if len(os.Getenv("JWT_SECRET")) < 32 {
 		return nil, fmt.Errorf("JWT_SECRET must be at least 32 characters")
+	}
+	if prev := os.Getenv("JWT_SECRET_PREVIOUS"); prev != "" && len(prev) < 32 {
+		return nil, fmt.Errorf("JWT_SECRET_PREVIOUS must be at least 32 characters")
 	}
 	env := strings.ToLower(os.Getenv("ENV"))
 	if env == "" {
@@ -94,6 +99,7 @@ func loadConfig() (*Config, error) {
 		RedisAddr: firstNonEmpty(os.Getenv("REDIS_ADDR"), "localhost:6379"),
 		RedisPass: os.Getenv("REDIS_PASSWORD"),
 		JWTSecret: os.Getenv("JWT_SECRET"),
+		JWTPrevSecret: os.Getenv("JWT_SECRET_PREVIOUS"),
 		TrustProxy: strings.ToLower(os.Getenv("TRUST_PROXY")) == "true",
 		MigrateLock: true,
 	}, nil
@@ -109,6 +115,11 @@ func firstNonEmpty(v ...string) string {
 }
 
 func main() {
+	reencrypt := flag.Bool("reencrypt", false, "re-encrypt all PII to the primary key version and exit")
+	dryRun := flag.Bool("dry-run", false, "with -reencrypt: report without writing")
+	forceHMAC := flag.Bool("rekey-hmac", false, "with -reencrypt: rewrite all rows even if already at primary version (HMAC-only rotation)")
+	flag.Parse()
+
 	app := &App{}
 	app.logger = logger.NewLogger()
 
@@ -130,6 +141,27 @@ func main() {
 		app.logger.Fatal("db init", "error", err)
 	}
 	defer app.db.Close()
+
+	if *reencrypt {
+		if !enc.HasPrevious() && !*forceHMAC {
+			app.logger.Info("rekey: single key configured and no -rekey-hmac; nothing to do")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		res, err := runRekey(ctx, app, enc, *dryRun, *forceHMAC)
+		if err != nil {
+			app.logger.Fatal("rekey", "error", err)
+		}
+		app.logger.Info("rekey complete",
+			"dryRun", *dryRun,
+			"scanned", res.scanned, "rewritten", res.rewritten,
+			"skipped", res.skipped, "failed", res.failed)
+		if res.failed > 0 {
+			os.Exit(1)
+		}
+		return
+	}
 
 	if err := app.runMigrations(cfg); err != nil {
 		app.logger.Fatal("migrations", "error", err)
@@ -280,6 +312,9 @@ func (app *App) setupRoutes(cfg *Config) {
 
 	// Services
 	jwtSvc := auth.NewJWTService(cfg.JWTSecret)
+	if cfg.JWTPrevSecret != "" {
+		jwtSvc = auth.NewJWTServiceWithPrevious(cfg.JWTSecret, cfg.JWTPrevSecret)
+	}
 	app.authService = services.NewAuthService(userRepo, refreshRepo, resetRepo, jwtSvc)
 	loanSvc := services.NewLoanService(app.db, loanRepo, creditRepo, repaymentRepo)
 	creditSvc := services.NewCreditService(creditRepo, userRepo, loanRepo, repaymentRepo)

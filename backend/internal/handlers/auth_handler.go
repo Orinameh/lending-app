@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"lending-app/backend/internal/services"
 	"lending-app/backend/pkg/crypto"
 	"lending-app/backend/pkg/validator"
@@ -57,11 +58,15 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.authService.Login(r.Context(), &req)
 	if err != nil {
-		ip, ua, reqID := auditMeta(r, h.trustProxy)
-		_ = h.auditService.Log(r.Context(), nil, nil, services.ActionLoginFailed,
-			"User", nil, map[string]string{"reason": "invalid credentials"},
-			ip, ua, reqID)
-		writeError(w, http.StatusUnauthorized, "LOGIN_FAILED", "invalid credentials")
+		if errors.Is(err, services.ErrInvalidCredentials) {
+			ip, ua, reqID := auditMeta(r, h.trustProxy)
+			_ = h.auditService.Log(r.Context(), nil, nil, services.ActionLoginFailed,
+				"User", nil, map[string]string{"reason": "invalid credentials"},
+				ip, ua, reqID)
+			writeError(w, http.StatusUnauthorized, "LOGIN_FAILED", "invalid credentials")
+			return
+		}
+		internalError(w, "LOGIN_FAILED")
 		return
 	}
 

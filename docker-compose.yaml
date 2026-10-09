@@ -38,8 +38,11 @@ services:
     environment:
       ENV: development
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      ENCRYPTION_KEY_PREVIOUS: ${ENCRYPTION_KEY_PREVIOUS:-}
       HMAC_KEY: ${HMAC_KEY:-}
+      HMAC_KEY_PREVIOUS: ${HMAC_KEY_PREVIOUS:-}
       JWT_SECRET: ${JWT_SECRET}
+      JWT_SECRET_PREVIOUS: ${JWT_SECRET_PREVIOUS:-}
       DB_HOST: postgres
       DB_PORT: 5432
       DB_USER: ${DB_USER:-lending_user}

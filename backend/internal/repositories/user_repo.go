@@ -208,10 +208,86 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*entitie
 	h := r.encryptor.HMAC(NormalizeEmail(email))
 	q := `SELECT ` + userCols + ` FROM users WHERE email_hmac = $1 AND deleted_at IS NULL`
 	u, err := r.scan(runner(ctx, r.db).QueryRowContext(ctx, q, h))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
+	if err == nil {
+		return u, nil
 	}
-	return u, err
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	// Rotation window: retry under the previous HMAC key.
+	if prev, ok := r.encryptor.HMACPrevious(NormalizeEmail(email)); ok {
+		u, err := r.scan(runner(ctx, r.db).QueryRowContext(ctx, q, prev))
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return u, err
+	}
+	return nil, ErrNotFound
+}
+
+// UpdatePII rewrites every encrypted PII column + HMAC for key rotation.
+// The caller decrypts with the key ring (old keys still work) and the
+// plaintext fields on u are re-encrypted here under the PRIMARY key.
+func (r *UserRepository) UpdatePII(ctx context.Context, u *entities.User) error {
+	emailNorm := NormalizeEmail(u.Email.Plain)
+	email, err := r.encField(emailNorm)
+	if err != nil {
+		return err
+	}
+	fn, err := r.encField(strings.TrimSpace(u.FirstName.Plain))
+	if err != nil {
+		return err
+	}
+	ln, err := r.encField(strings.TrimSpace(u.LastName.Plain))
+	if err != nil {
+		return err
+	}
+	ph, err := r.encField(strings.TrimSpace(u.Phone.Plain))
+	if err != nil {
+		return err
+	}
+	bvn, err := r.encField(strings.TrimSpace(u.BVN.Plain))
+	if err != nil {
+		return err
+	}
+	nin, err := r.encField(strings.TrimSpace(u.NIN.Plain))
+	if err != nil {
+		return err
+	}
+	addr, err := r.encField(u.Address.Plain)
+	if err != nil {
+		return err
+	}
+	city, err := r.encField(u.City.Plain)
+	if err != nil {
+		return err
+	}
+	state, err := r.encField(u.State.Plain)
+	if err != nil {
+		return err
+	}
+	hmacOf := func(s string) sql.NullString {
+		if strings.TrimSpace(s) == "" {
+			return sql.NullString{}
+		}
+		return sql.NullString{String: r.encryptor.HMAC(strings.TrimSpace(s)), Valid: true}
+	}
+	var bvnHMAC, ninHMAC sql.NullString
+	if strings.TrimSpace(u.BVN.Plain) != "" {
+		bvnHMAC = sql.NullString{String: r.encryptor.HMAC(strings.TrimSpace(u.BVN.Plain)), Valid: true}
+	}
+	if strings.TrimSpace(u.NIN.Plain) != "" {
+		ninHMAC = sql.NullString{String: r.encryptor.HMAC(strings.TrimSpace(u.NIN.Plain)), Valid: true}
+	}
+	_, err = runner(ctx, r.db).ExecContext(ctx, `
+        UPDATE users SET email=$1, email_hmac=$2, first_name=$3, last_name=$4,
+            phone=$5, phone_hmac=$6, bvn=$7, bvn_hmac=$8, nin=$9, nin_hmac=$10,
+            address=$11, city=$12, state=$13, updated_at=$14
+        WHERE id=$15 AND deleted_at IS NULL`,
+		email, r.encryptor.HMAC(emailNorm), fn, ln, ph, hmacOf(u.Phone.Plain),
+		bvn, bvnHMAC, nin, ninHMAC, addr, city, state,
+		time.Now().UTC(), u.ID)
+	return err
 }
 
 func (r *UserRepository) Update(ctx context.Context, u *entities.User) error {
