@@ -2,84 +2,81 @@ package middleware
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"strings"
+	"strconv"
 	"time"
 
+	"github.com/go-redis/redis_rate/v10"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
+// RateLimiter is a sliding-window limiter (redis_rate, Lua-backed) with
+// budgets declared per route in the router table — not matched by path
+// strings here. Public routes key on client IP; authenticated routes key on
+// user ID (abuse attribution survives IP rotation), so auth runs BEFORE the
+// limiter on those tiers (see api.NewRouter).
+//
+// Redis outage degrades fail-open: availability over strictness, and auth
+// itself still holds. Standard X-RateLimit-* headers are always emitted.
 type RateLimiter struct {
-	redis      *redis.Client
+	limiter    *redis_rate.Limiter
 	trustProxy bool
 }
 
 func NewRateLimiter(r *redis.Client) *RateLimiter {
-	return &RateLimiter{redis: r}
+	return &RateLimiter{limiter: redis_rate.NewLimiter(r)}
 }
 
 // SetTrustProxy enables X-Forwarded-For handling (only behind a trusted LB).
 func (rl *RateLimiter) SetTrustProxy(v bool) { rl.trustProxy = v }
 
-// fixed-window atomic increment via Lua: INCR + EXPIRE only on first hit.
-var fixedWindow = redis.NewScript(`
-local c = redis.call('INCR', KEYS[1])
-if c == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
-return c
-`)
+// Per builds a no-burst sliding-window budget: n events per window.
+func Per(n int, window time.Duration) redis_rate.Limit {
+	return redis_rate.Limit{Rate: n, Burst: n, Period: window}
+}
 
-func (rl *RateLimiter) Wrap(next http.Handler) http.Handler {
+// LimitByIP applies budget keyed on the client IP (public routes).
+func (rl *RateLimiter) LimitByIP(next http.Handler, budget redis_rate.Limit) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := ClientIP(r, rl.trustProxy)
-		limit, window := limitsFor(r.URL.Path, r.Method)
-
-		key := fmt.Sprintf("rl:%s:%s:%s", ip, r.Method, r.URL.Path)
-		ctx := r.Context()
-
-		count, err := fixedWindow.Run(ctx, rl.redis, []string{key}, int64(window.Milliseconds())).Int()
-		if err != nil {
-			// fail-open if redis is down (availability over strictness)
-			next.ServeHTTP(w, r)
-			return
-		}
-		if count > limit {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(window.Seconds())))
-			w.WriteHeader(http.StatusTooManyRequests)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"error":       "rate limit exceeded",
-				"retry_after": int(window.Seconds()),
-			})
-			return
-		}
-		next.ServeHTTP(w, r)
+		rl.serve(w, r, next, "ip:"+ClientIP(r, rl.trustProxy), budget)
 	})
 }
 
-func limitsFor(path, method string) (int, time.Duration) {
-	switch {
-	case path == "/api/v1/auth/login":
-		return 5, 15 * time.Minute
-	case path == "/api/v1/auth/register":
-		return 3, 24 * time.Hour
-	case path == "/api/v1/auth/refresh" || path == "/api/v1/auth/forgot-password" || path == "/api/v1/auth/reset-password":
-		return 5, 15 * time.Minute
-	case path == "/api/v1/auth/verify-email":
-		return 10, 15 * time.Minute
-	case path == "/api/v1/auth/request-email-verification":
-		return 5, time.Hour
-	case path == "/api/v1/auth/request-phone-otp":
-		return 3, 15 * time.Minute
-	case path == "/api/v1/auth/verify-phone":
-		return 10, 15 * time.Minute
-	case path == "/api/v1/kyc/submit":
-		return 10, time.Hour
-	case strings.HasPrefix(path, "/api/v1/admin"):
-		return 60, time.Minute
-	case method == "POST" && strings.Contains(path, "/repay"):
-		return 10, time.Minute
-	default:
-		return 120, time.Minute
+// LimitByUser applies budget keyed on the authenticated user ID. Must run
+// inside the auth middleware; without a user in context it denies closed
+// (fail-closed is correct here — it means wiring is broken, not Redis).
+func (rl *RateLimiter) LimitByUser(next http.Handler, budget redis_rate.Limit) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uid, ok := UserIDFromContext(r.Context())
+		if !ok || uid == uuid.Nil {
+			writeJSONError(w, http.StatusUnauthorized, "missing user context")
+			return
+		}
+		rl.serve(w, r, next, "user:"+uid.String(), budget)
+	})
+}
+
+func (rl *RateLimiter) serve(w http.ResponseWriter, r *http.Request, next http.Handler, key string, budget redis_rate.Limit) {
+	res, err := rl.limiter.Allow(r.Context(), key+":"+r.Method+":"+r.URL.Path, budget)
+	if err != nil {
+		next.ServeHTTP(w, r) // fail-open on Redis outage
+		return
 	}
+	// Informational headers on every response (success and 429 alike).
+	h := w.Header()
+	h.Set("X-RateLimit-Limit", strconv.Itoa(budget.Rate))
+	h.Set("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
+	h.Set("X-RateLimit-Reset", strconv.FormatInt(int64(res.ResetAfter/time.Second), 10))
+	if res.Allowed == 0 {
+		h.Set("Content-Type", "application/json")
+		h.Set("Retry-After", strconv.FormatInt(int64(res.RetryAfter/time.Second), 10))
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":       "rate limit exceeded",
+			"retry_after": int64(res.RetryAfter / time.Second),
+		})
+		return
+	}
+	next.ServeHTTP(w, r)
 }

@@ -62,7 +62,9 @@ Request flow for `POST /api/v1/loans/{id}/repay`:
 1. `RequestID` stamps `X-Request-ID` (propagated into audit rows).
 2. `LoggerMiddleware` records method/path/status/latency (no query strings).
 3. `SecurityMiddleware` sets HSTS, CSP, `no-store`, COOP/CORP… headers.
-4. `RateLimiter` runs an atomic Lua fixed-window check in Redis
+4. `RateLimiter` runs a sliding-window check (redis_rate, Lua-backed) with
+   the budget declared on the route itself — public routes key on client IP,
+   authenticated routes key on user ID (auth runs before the limiter there).
    (fail-open if Redis is down; `X-Forwarded-For` trusted only when
    `TRUST_PROXY=true`).
 5. `AuthMiddleware` validates the JWT **and** re-checks `IsActive` + current
