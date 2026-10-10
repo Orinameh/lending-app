@@ -8,6 +8,7 @@ import (
 	"lending-app/backend/internal/api"
 	"lending-app/backend/internal/config"
 	"lending-app/backend/internal/handlers"
+	"lending-app/backend/internal/identity"
 	"lending-app/backend/internal/infrastructure/logger"
 	"lending-app/backend/internal/middleware"
 	"lending-app/backend/internal/repositories"
@@ -327,6 +328,8 @@ func (app *App) setupRoutes(cfg *Config) {
 	auditRepo := repositories.NewAuditRepository(app.db)
 	refreshRepo := repositories.NewRefreshTokenRepository(app.db)
 	resetRepo := repositories.NewPasswordResetRepository(app.db)
+	verificationRepo := repositories.NewVerificationRepository(app.db)
+	kycRepo := repositories.NewKYCRepository(app.db)
 
 	// Services
 	jwtSvc := auth.NewJWTService(cfg.JWTSecret)
@@ -334,29 +337,34 @@ func (app *App) setupRoutes(cfg *Config) {
 		jwtSvc = auth.NewJWTServiceWithPrevious(cfg.JWTSecret, cfg.JWTPrevSecret)
 	}
 	app.authService = services.NewAuthService(userRepo, refreshRepo, resetRepo, jwtSvc)
-	loanSvc := services.NewLoanService(app.db, loanRepo, creditRepo, repaymentRepo, app.policy.Pricing)
+	verificationSvc := services.NewVerificationService(verificationRepo, userRepo, app.encryptor)
+	// Identity provider: fake (deterministic) for dev/test. Production swaps
+	// in a licensed vendor implementing identity.Provider — no other change.
+	kycSvc := services.NewKYCService(kycRepo, userRepo, identity.FakeProvider{}, app.encryptor)
+	loanSvc := services.NewLoanService(app.db, loanRepo, creditRepo, repaymentRepo, userRepo, app.policy.Pricing)
 	creditSvc := services.NewCreditService(creditRepo, userRepo, loanRepo, repaymentRepo)
 	repaymentSvc := services.NewRepaymentService(app.db, repaymentRepo, loanRepo, app.policy.Fees)
 	collectionSvc := services.NewCollectionService(collectionRepo, loanRepo, repaymentRepo)
 	collectionSvc.WithDB(app.db)
 	collectionSvc.WithRepaymentSvc(repaymentSvc)
-	adminSvc := services.NewAdminService(loanRepo, userRepo, collectionRepo)
+	adminSvc := services.NewAdminService(loanRepo, userRepo, collectionRepo, kycRepo)
 	auditSvc := services.NewAuditService(auditRepo)
 
 	// Handlers
-	authH := handlers.NewAuthHandler(app.authService, auditSvc, app.encryptor)
+	authH := handlers.NewAuthHandler(app.authService, verificationSvc, auditSvc, app.encryptor)
 	loanH := handlers.NewLoanHandler(loanSvc, auditSvc)
 	creditH := handlers.NewCreditHandler(creditSvc, auditSvc)
 	repaymentH := handlers.NewRepaymentHandler(repaymentSvc, auditSvc)
 	collectionH := handlers.NewCollectionHandler(collectionSvc, auditSvc)
 	adminH := handlers.NewAdminHandler(adminSvc, auditSvc)
 	healthH := handlers.NewHealthHandler(app.encryptor, app.db, app.redis)
+	kycH := handlers.NewKYCHandler(kycSvc, auditSvc)
 
 	app.router = api.NewRouter(
 		api.Deps{
 			Auth: authH, Loan: loanH, Credit: creditH,
 			Repayment: repaymentH, Collection: collectionH,
-			Admin: adminH, Health: healthH,
+			Admin: adminH, Health: healthH, KYC: kycH,
 		},
 		api.MW{
 			Logger:      middleware.NewLoggerMiddleware(app.logger),
@@ -366,6 +374,9 @@ func (app *App) setupRoutes(cfg *Config) {
 			Admin:       middleware.NewAdminMiddleware(),
 		},
 		cfg.TrustProxy,
+		// Raw tokens/OTPs echo only in dev/test — never staging/demo/prod,
+		// which are network-reachable and may hold realistic data.
+		cfg.Env == "development" || cfg.Env == "test",
 	)
 }
 

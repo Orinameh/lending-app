@@ -65,6 +65,16 @@ func limitsFor(path, method string) (int, time.Duration) {
 		return 3, 24 * time.Hour
 	case path == "/api/v1/auth/refresh" || path == "/api/v1/auth/forgot-password" || path == "/api/v1/auth/reset-password":
 		return 5, 15 * time.Minute
+	case path == "/api/v1/auth/verify-email":
+		return 10, 15 * time.Minute
+	case path == "/api/v1/auth/request-email-verification":
+		return 5, time.Hour
+	case path == "/api/v1/auth/request-phone-otp":
+		return 3, 15 * time.Minute
+	case path == "/api/v1/auth/verify-phone":
+		return 10, 15 * time.Minute
+	case path == "/api/v1/kyc/submit":
+		return 10, time.Hour
 	case strings.HasPrefix(path, "/api/v1/admin"):
 		return 60, time.Minute
 	case method == "POST" && strings.Contains(path, "/repay"):

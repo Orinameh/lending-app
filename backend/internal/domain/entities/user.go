@@ -60,7 +60,9 @@ type User struct {
 	AnnualIncome   decimal.Decimal `json:"annualIncome"`
 	Role           string          `json:"role"`
 	EmailVerified  bool            `json:"emailVerified"`
+	EmailVerifiedAt *time.Time     `json:"emailVerifiedAt,omitempty"`
 	PhoneVerified  bool            `json:"phoneVerified"`
+	PhoneVerifiedAt *time.Time     `json:"phoneVerifiedAt,omitempty"`
 	KYCStatus      string          `json:"kycStatus"`
 	IsActive       bool            `json:"isActive"`
 	CreatedAt      time.Time       `json:"createdAt"`
@@ -82,7 +84,9 @@ type UserProfile struct {
 	AnnualIncome   string    `json:"annualIncome"`
 	Role           string    `json:"role"`
 	EmailVerified  bool      `json:"emailVerified"`
+	EmailVerifiedAt *time.Time `json:"emailVerifiedAt,omitempty"`
 	PhoneVerified  bool      `json:"phoneVerified"`
+	PhoneVerifiedAt *time.Time `json:"phoneVerifiedAt,omitempty"`
 	KYCStatus      string    `json:"kycStatus"`
 	IsActive       bool      `json:"isActive"`
 	CreatedAt      time.Time `json:"createdAt"`
@@ -96,7 +100,8 @@ func (u *User) Profile() UserProfile {
 		Phone: u.Phone.Plain, DateOfBirth: u.DateOfBirth,
 		Country: u.Country, Currency: u.Currency,
 		EmploymentType: u.EmploymentType, AnnualIncome: u.AnnualIncome.String(),
-		Role: u.Role, EmailVerified: u.EmailVerified, PhoneVerified: u.PhoneVerified,
+	Role: u.Role, EmailVerified: u.EmailVerified, PhoneVerified: u.PhoneVerified,
+		EmailVerifiedAt: u.EmailVerifiedAt, PhoneVerifiedAt: u.PhoneVerifiedAt,
 		KYCStatus: u.KYCStatus, IsActive: u.IsActive,
 		CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,
 	}

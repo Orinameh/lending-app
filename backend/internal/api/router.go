@@ -26,6 +26,7 @@ type Deps struct {
 	Collection *handlers.CollectionHandler
 	Admin      *handlers.AdminHandler
 	Health     *handlers.HealthHandler
+	KYC        *handlers.KYCHandler
 }
 
 type MW struct {
@@ -52,6 +53,10 @@ func table(d Deps) []route {
 		{"POST /api/v1/auth/logout", Authenticated, d.Auth.Logout},
 		{"POST /api/v1/auth/forgot-password", Public, d.Auth.ForgotPassword},
 		{"POST /api/v1/auth/reset-password", Public, d.Auth.ResetPassword},
+		{"POST /api/v1/auth/request-email-verification", Authenticated, d.Auth.RequestEmailVerification},
+		{"POST /api/v1/auth/verify-email", Public, d.Auth.VerifyEmail},
+		{"POST /api/v1/auth/request-phone-otp", Authenticated, d.Auth.RequestPhoneOTP},
+		{"POST /api/v1/auth/verify-phone", Authenticated, d.Auth.VerifyPhone},
 
 		// Authenticated.
 		{"GET /api/v1/profile", Authenticated, d.Auth.GetProfile},
@@ -66,6 +71,8 @@ func table(d Deps) []route {
 		{"POST /api/v1/credit/refresh", Authenticated, d.Credit.RefreshCreditReport},
 		{"GET /api/v1/collections", Authenticated, d.Collection.GetUserCollections},
 		{"POST /api/v1/collections/{id}/payment-arrangement", Authenticated, d.Collection.CreatePaymentArrangement},
+		{"POST /api/v1/kyc/submit", Authenticated, d.KYC.Submit},
+		{"GET /api/v1/kyc", Authenticated, d.KYC.ListMine},
 
 		// Admin (auth + admin check).
 		{"GET /api/v1/admin/dashboard", Admin, d.Admin.GetDashboardStats},
@@ -88,10 +95,13 @@ type trustProxySetter interface{ SetTrustProxy(bool) }
 
 // NewRouter builds the mux. Middleware order per tier:
 // requestID → logging → security → rate limit → auth → admin.
-func NewRouter(d Deps, mw MW, trustProxy bool) *http.ServeMux {
-	for _, h := range []trustProxySetter{d.Auth, d.Loan, d.Credit, d.Repayment, d.Collection, d.Admin} {
+// devMode echoes raw email tokens / OTP codes in responses (non-prod only;
+// production delivers via email/SMS vendors).
+func NewRouter(d Deps, mw MW, trustProxy, devMode bool) *http.ServeMux {
+	for _, h := range []trustProxySetter{d.Auth, d.Loan, d.Credit, d.Repayment, d.Collection, d.Admin, d.KYC} {
 		h.SetTrustProxy(trustProxy)
 	}
+	d.Auth.SetDevExposeSecrets(devMode)
 	mw.RateLimiter.SetTrustProxy(trustProxy)
 
 	mux := http.NewServeMux()

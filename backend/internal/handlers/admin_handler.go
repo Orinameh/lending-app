@@ -124,7 +124,7 @@ func (h *AdminHandler) ApproveKYC(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_ID", "invalid user id")
 		return
 	}
-	if err := h.adminService.UpdateKYCStatus(r.Context(), id, "verified"); err != nil {
+	if err := h.adminService.UpdateKYCStatus(r.Context(), actorID, id, "verified", ""); err != nil {
 		writeError(w, http.StatusBadRequest, "UPDATE_FAILED", err.Error())
 		return
 	}
@@ -151,7 +151,7 @@ func (h *AdminHandler) RejectKYC(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "reason too long")
 		return
 	}
-	if err := h.adminService.UpdateKYCStatus(r.Context(), id, "rejected"); err != nil {
+	if err := h.adminService.UpdateKYCStatus(r.Context(), actorID, id, "rejected", req.Reason); err != nil {
 		writeError(w, http.StatusBadRequest, "UPDATE_FAILED", err.Error())
 		return
 	}

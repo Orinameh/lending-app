@@ -19,6 +19,7 @@ type LoanService struct {
 	loanRepo      *repositories.LoanRepository
 	creditRepo    *repositories.CreditRepository
 	repaymentRepo *repositories.RepaymentRepository
+	userRepo      *repositories.UserRepository
 	pricing       config.Pricing
 }
 
@@ -27,9 +28,10 @@ func NewLoanService(
 	loanRepo *repositories.LoanRepository,
 	creditRepo *repositories.CreditRepository,
 	repaymentRepo *repositories.RepaymentRepository,
+	userRepo *repositories.UserRepository,
 	pricing config.Pricing,
 ) *LoanService {
-	return &LoanService{db: db, loanRepo: loanRepo, creditRepo: creditRepo, repaymentRepo: repaymentRepo, pricing: pricing}
+	return &LoanService{db: db, loanRepo: loanRepo, creditRepo: creditRepo, repaymentRepo: repaymentRepo, userRepo: userRepo, pricing: pricing}
 }
 
 type LoanApplicationRequest struct {
@@ -56,6 +58,19 @@ func (s *LoanService) pricedRate(riskScore int) decimal.Decimal {
 func (s *LoanService) ApplyForLoan(ctx context.Context, userID uuid.UUID, req *LoanApplicationRequest) (*entities.Loan, error) {
 	if err := validateLoanRequest(req); err != nil {
 		return nil, err
+	}
+
+	// Money gate 1: verified contact channels before any application.
+	// Repayments stay ungated (blocking paybacks would be perverse).
+	borrower, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !borrower.EmailVerified {
+		return nil, errors.New("email verification required before applying")
+	}
+	if !borrower.PhoneVerified {
+		return nil, errors.New("phone verification required before applying")
 	}
 
 	// Idempotency: same key returns the original loan (safe retry/double-click).
@@ -158,6 +173,14 @@ func (s *LoanService) Disburse(ctx context.Context, loanID uuid.UUID) (*entities
 		}
 		if loan.Status != entities.LoanStatusApproved {
 			return errors.New("only approved loans can be disbursed")
+		}
+		// Money gate 2: human-approved KYC before funds move.
+		holder, err := s.userRepo.GetByID(txCtx, loan.UserID)
+		if err != nil {
+			return err
+		}
+		if holder.KYCStatus != "verified" {
+			return errors.New("verified KYC required before disbursement")
 		}
 		// Idempotent: schedule already exists (prior attempt committed).
 		if existing, err := s.repaymentRepo.GetByLoanID(txCtx, loanID); err != nil {

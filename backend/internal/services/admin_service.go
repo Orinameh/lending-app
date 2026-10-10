@@ -13,10 +13,11 @@ type AdminService struct {
 	loanRepo       *repositories.LoanRepository
 	userRepo       *repositories.UserRepository
 	collectionRepo *repositories.CollectionRepository
+	kycRepo        *repositories.KYCRepository
 }
 
-func NewAdminService(lr *repositories.LoanRepository, ur *repositories.UserRepository, cr *repositories.CollectionRepository) *AdminService {
-	return &AdminService{loanRepo: lr, userRepo: ur, collectionRepo: cr}
+func NewAdminService(lr *repositories.LoanRepository, ur *repositories.UserRepository, cr *repositories.CollectionRepository, kr *repositories.KYCRepository) *AdminService {
+	return &AdminService{loanRepo: lr, userRepo: ur, collectionRepo: cr, kycRepo: kr}
 }
 
 type DashboardStats struct {
@@ -89,12 +90,45 @@ func (s *AdminService) UpdateUserRole(ctx context.Context, id uuid.UUID, role st
 	return s.userRepo.UpdateRole(ctx, id, role)
 }
 
-func (s *AdminService) UpdateKYCStatus(ctx context.Context, id uuid.UUID, status string) error {
+func (s *AdminService) UpdateKYCStatus(ctx context.Context, actorID, userID uuid.UUID, status, reason string) error {
 	if !entities.ValidKYCStatuses[status] {
 		return errors.New("invalid kyc status")
 	}
 	if status == "pending" {
 		return errors.New("cannot revert kyc to pending")
 	}
-	return s.userRepo.UpdateKYCStatus(ctx, id, status)
+	if err := s.userRepo.UpdateKYCStatus(ctx, userID, status); err != nil {
+		return err
+	}
+	// Keep document rows in sync so GET /kyc and doc-level audit stop
+	// showing stale "submitted" after a human decision. Approval accepts
+	// every pending review; rejection closes them with the reason.
+	docs, err := s.kycRepo.ListByUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	for _, d := range docs {
+		if d.Status != "pending" && d.Status != "submitted" {
+			continue
+		}
+		if err := s.kycRepo.UpdateStatus(ctx, d.ID, statusFor(status), reasonFor(status, reason), &actorID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// statusFor maps user-level KYC decisions to document states.
+func statusFor(userStatus string) string {
+	if userStatus == "verified" {
+		return "verified"
+	}
+	return "rejected"
+}
+
+func reasonFor(userStatus, reason string) string {
+	if userStatus == "verified" {
+		return ""
+	}
+	return reason
 }

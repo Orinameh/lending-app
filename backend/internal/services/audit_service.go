@@ -23,6 +23,8 @@ const (
 	ActionUserRoleChange    AuditAction = "USER_ROLE_CHANGE"
 	ActionPasswordResetReq  AuditAction = "PASSWORD_RESET_REQUEST"
 	ActionPasswordReset     AuditAction = "PASSWORD_RESET"
+	ActionEmailVerified     AuditAction = "EMAIL_VERIFIED"
+	ActionPhoneVerified     AuditAction = "PHONE_VERIFIED"
 	ActionLoanApplication   AuditAction = "LOAN_APPLICATION"
 	ActionLoanApproval      AuditAction = "LOAN_APPROVAL"
 	ActionLoanStatusChange  AuditAction = "LOAN_STATUS_CHANGE"
@@ -35,6 +37,7 @@ const (
 	ActionKYCApprove        AuditAction = "KYC_APPROVE"
 	ActionKYCReject         AuditAction = "KYC_REJECT"
 	ActionKYCUpdate         AuditAction = "KYC_UPDATE"
+	ActionKYCSubmitted      AuditAction = "KYC_SUBMITTED"
 )
 
 type AuditService struct {

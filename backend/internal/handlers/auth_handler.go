@@ -12,17 +12,23 @@ import (
 )
 
 type AuthHandler struct {
-	authService  *services.AuthService
-	auditService *services.AuditService
-	encryptor    *crypto.EncryptionService
-	trustProxy   bool
+	authService        *services.AuthService
+	verificationSvc    *services.VerificationService
+	auditService       *services.AuditService
+	encryptor          *crypto.EncryptionService
+	trustProxy         bool
+	devExposeSecrets   bool
 }
 
-func NewAuthHandler(a *services.AuthService, au *services.AuditService, e *crypto.EncryptionService) *AuthHandler {
-	return &AuthHandler{authService: a, auditService: au, encryptor: e}
+func NewAuthHandler(a *services.AuthService, v *services.VerificationService, au *services.AuditService, e *crypto.EncryptionService) *AuthHandler {
+	return &AuthHandler{authService: a, verificationSvc: v, auditService: au, encryptor: e}
 }
 
 func (h *AuthHandler) SetTrustProxy(v bool) { h.trustProxy = v }
+
+// SetDevExposeSecrets includes raw email tokens / OTP codes in responses.
+// Non-production only: real delivery goes through email/SMS vendors.
+func (h *AuthHandler) SetDevExposeSecrets(v bool) { h.devExposeSecrets = v }
 
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var req services.RegisterRequest
@@ -199,6 +205,13 @@ func (h *AuthHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid phone format")
 			return
 		}
+		if strings.TrimSpace(req.Phone) != strings.TrimSpace(user.Phone.Plain) {
+			// Number changed → previous verification no longer means
+			// anything. Reset so the loan gate re-engages until the new
+			// number is verified.
+			user.PhoneVerified = false
+			user.PhoneVerifiedAt = nil
+		}
 		user.Phone.Plain = strings.TrimSpace(req.Phone)
 	}
 	if req.Address != "" {
@@ -244,4 +257,102 @@ func validEmployment(s string) bool {
 		return true
 	}
 	return false
+}
+
+// POST /api/v1/auth/request-email-verification (authenticated)
+func (h *AuthHandler) RequestEmailVerification(w http.ResponseWriter, r *http.Request) {
+	userID, ok := ctxUserID(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing user context")
+		return
+	}
+	raw, err := h.verificationSvc.RequestEmailVerification(r.Context(), userID)
+	if err != nil {
+		if errors.Is(err, services.ErrAlreadyVerified) {
+			writeSuccess(w, http.StatusOK, map[string]string{"verified": "true"}, "email already verified")
+			return
+		}
+		internalError(w, "VERIFY_REQUEST_FAILED")
+		return
+	}
+	// Production delivers `raw` via the email vendor; in non-production it
+	// is echoed once so the flow is completable without a vendor.
+	resp := map[string]string{"sent": "true"}
+	if h.devExposeSecrets {
+		resp["token"] = raw
+	}
+	writeSuccess(w, http.StatusOK, resp, "verification email sent")
+}
+
+// POST /api/v1/auth/verify-email (public: the token is the credential)
+func (h *AuthHandler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	userID, err := h.verificationSvc.VerifyEmail(r.Context(), strings.TrimSpace(req.Token))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "VERIFY_FAILED", "invalid or expired token")
+		return
+	}
+	ip, ua, reqID := auditMeta(r, h.trustProxy)
+	_ = h.auditService.Log(r.Context(), &userID, &userID, services.ActionEmailVerified,
+		"User", &userID, nil, ip, ua, reqID)
+	writeSuccess(w, http.StatusOK, nil, "email verified")
+}
+
+// POST /api/v1/auth/request-phone-otp (authenticated)
+func (h *AuthHandler) RequestPhoneOTP(w http.ResponseWriter, r *http.Request) {
+	userID, ok := ctxUserID(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing user context")
+		return
+	}
+	code, err := h.verificationSvc.RequestPhoneOTP(r.Context(), userID)
+	if err != nil {
+		if err == services.ErrOTPResendLimit {
+			writeError(w, http.StatusTooManyRequests, "RESEND_LIMIT", err.Error())
+			return
+		}
+		if errors.Is(err, services.ErrAlreadyVerified) {
+			writeSuccess(w, http.StatusOK, map[string]string{"verified": "true"}, "phone already verified")
+			return
+		}
+		internalError(w, "OTP_REQUEST_FAILED")
+		return
+	}
+	resp := map[string]string{"sent": "true"}
+	if h.devExposeSecrets {
+		resp["code"] = code
+	}
+	writeSuccess(w, http.StatusOK, resp, "one-time code sent")
+}
+
+// POST /api/v1/auth/verify-phone (authenticated: code binds to the account)
+func (h *AuthHandler) VerifyPhone(w http.ResponseWriter, r *http.Request) {
+	userID, ok := ctxUserID(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing user context")
+		return
+	}
+	var req struct {
+		Code string `json:"code"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := h.verificationSvc.VerifyPhoneOTP(r.Context(), userID, strings.TrimSpace(req.Code)); err != nil {
+		if err == services.ErrOTPAttemptsSpent {
+			writeError(w, http.StatusTooManyRequests, "VERIFY_FAILED", err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, "VERIFY_FAILED", "invalid or expired code")
+		return
+	}
+	ip, ua, reqID := auditMeta(r, h.trustProxy)
+	_ = h.auditService.Log(r.Context(), &userID, &userID, services.ActionPhoneVerified,
+		"User", &userID, nil, ip, ua, reqID)
+	writeSuccess(w, http.StatusOK, nil, "phone verified")
 }

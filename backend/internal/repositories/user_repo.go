@@ -125,7 +125,7 @@ func (r *UserRepository) Create(ctx context.Context, u *entities.User) error {
 const userCols = `
     id, email, password_hash, first_name, last_name, phone, bvn, nin,
     address, city, state, date_of_birth, country, currency, employment_type,
-    annual_income, role, email_verified, phone_verified, kyc_status,
+    annual_income, role, email_verified, email_verified_at, phone_verified, phone_verified_at, kyc_status,
     is_active, created_at, updated_at, deleted_at
 `
 
@@ -133,11 +133,11 @@ func (r *UserRepository) scan(row interface{ Scan(...interface{}) error }) (*ent
 	var u entities.User
 	var email, fn, ln, ph, bvn, nin, addr, city, state sql.NullString
 	var annualIncomeStr sql.NullString
-	var deletedAt sql.NullTime
+	var emailVerifiedAt, phoneVerifiedAt, deletedAt sql.NullTime
 	err := row.Scan(
 		&u.ID, &email, &u.PasswordHash, &fn, &ln, &ph, &bvn, &nin,
 		&addr, &city, &state, &u.DateOfBirth, &u.Country, &u.Currency, &u.EmploymentType,
-		&annualIncomeStr, &u.Role, &u.EmailVerified, &u.PhoneVerified,
+		&annualIncomeStr, &u.Role, &u.EmailVerified, &emailVerifiedAt, &u.PhoneVerified, &phoneVerifiedAt,
 		&u.KYCStatus, &u.IsActive, &u.CreatedAt, &u.UpdatedAt, &deletedAt,
 	)
 	if err != nil {
@@ -191,6 +191,12 @@ func (r *UserRepository) scan(row interface{ Scan(...interface{}) error }) (*ent
 	}
 	if deletedAt.Valid {
 		u.DeletedAt = &deletedAt.Time
+	}
+	if emailVerifiedAt.Valid {
+		u.EmailVerifiedAt = &emailVerifiedAt.Time
+	}
+	if phoneVerifiedAt.Valid {
+		u.PhoneVerifiedAt = &phoneVerifiedAt.Time
 	}
 	return &u, nil
 }
@@ -313,17 +319,51 @@ func (r *UserRepository) Update(ctx context.Context, u *entities.User) error {
 	}
 	_, err = runner(ctx, r.db).ExecContext(ctx, `
         UPDATE users SET phone=$1, phone_hmac=$2, address=$3, city=$4, state=$5,
-            employment_type=$6, annual_income=$7, updated_at=$8
-        WHERE id=$9 AND deleted_at IS NULL`,
+            employment_type=$6, annual_income=$7, phone_verified=$8,
+            phone_verified_at=$9, updated_at=$10
+        WHERE id=$11 AND deleted_at IS NULL`,
 		ph, phoneHMAC, addr, city, state, u.EmploymentType, u.AnnualIncome.String(),
+		u.PhoneVerified, toNullTime(u.PhoneVerifiedAt),
 		time.Now().UTC(), u.ID)
 	return err
+}
+
+func toNullTime(t *time.Time) sql.NullTime {
+	if t == nil {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: *t, Valid: true}
 }
 
 func (r *UserRepository) UpdatePassword(ctx context.Context, id uuid.UUID, hash string) error {
 	_, err := runner(ctx, r.db).ExecContext(ctx,
 		`UPDATE users SET password_hash=$1, updated_at=$2 WHERE id=$3 AND deleted_at IS NULL`,
 		hash, time.Now().UTC(), id)
+	return err
+}
+
+func (r *UserRepository) SetEmailVerified(ctx context.Context, id uuid.UUID, verified bool) error {
+	// verified_at is set exactly once per transition to true (preserved on
+	// repeat calls); cleared on revocation. This is the compliance record
+	// proving verification preceded any disbursement.
+	_, err := runner(ctx, r.db).ExecContext(ctx,
+		`UPDATE users SET email_verified=$1,
+            email_verified_at = CASE WHEN $1 AND email_verified_at IS NULL
+                THEN NOW() WHEN NOT $1 THEN NULL
+                ELSE email_verified_at END,
+            updated_at=$2 WHERE id=$3 AND deleted_at IS NULL`,
+		verified, time.Now().UTC(), id)
+	return err
+}
+
+func (r *UserRepository) SetPhoneVerified(ctx context.Context, id uuid.UUID, verified bool) error {
+	_, err := runner(ctx, r.db).ExecContext(ctx,
+		`UPDATE users SET phone_verified=$1,
+            phone_verified_at = CASE WHEN $1 AND phone_verified_at IS NULL
+                THEN NOW() WHEN NOT $1 THEN NULL
+                ELSE phone_verified_at END,
+            updated_at=$2 WHERE id=$3 AND deleted_at IS NULL`,
+		verified, time.Now().UTC(), id)
 	return err
 }
 
