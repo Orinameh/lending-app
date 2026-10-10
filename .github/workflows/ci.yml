@@ -1,15 +1,27 @@
 name: CI
 
 on:
+  # NOTE: backend/migrations/** is deliberately absent — migration-only
+  # pushes run migrate.yml alone (see that file), not a full rebuild.
   push:
     paths:
-      - "backend/**"
+      - "backend/cmd/**"
+      - "backend/internal/**"
+      - "backend/pkg/**"
+      - "backend/Dockerfile"
+      - "backend/config.yaml"
+      - ".dockerignore"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
-      - "backend/**"
+      - "backend/cmd/**"
+      - "backend/internal/**"
+      - "backend/pkg/**"
+      - "backend/Dockerfile"
+      - "backend/config.yaml"
+      - ".dockerignore"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/ci.yml"
