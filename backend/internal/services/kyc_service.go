@@ -101,7 +101,7 @@ func (s *KYCService) Submit(ctx context.Context, userID uuid.UUID, req *KYCSubmi
 			return nil, fmt.Errorf("%w: this document is already registered to another account", ErrKYCConflict)
 		}
 		return nil, fmt.Errorf("%w: this document is already verified on your account", ErrKYCConflict)
-	} else if err != nil && !errors.Is(err, repositories.ErrNotFound) {
+	} else if !errors.Is(err, repositories.ErrNotFound) {
 		return nil, err
 	}
 
