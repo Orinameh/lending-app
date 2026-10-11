@@ -9,14 +9,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 )
 
 type CollectionRepository struct {
-	db *sql.DB
+	db *pgxpool.Pool
 }
 
-func NewCollectionRepository(db *sql.DB) *CollectionRepository {
+func NewCollectionRepository(db *pgxpool.Pool) *CollectionRepository {
 	return &CollectionRepository{db: db}
 }
 
@@ -28,7 +30,7 @@ func (r *CollectionRepository) Create(ctx context.Context, c *entities.Collectio
             notes, created_at, updated_at
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
     `
-	_, err := runner(ctx, r.db).ExecContext(ctx, q,
+	_, err := querier(ctx, r.db).Exec(ctx, q,
 		c.ID, c.LoanID, c.UserID, c.AmountOutstanding.String(),
 		c.DaysPastDue, c.Status, c.AssignedTo, c.LastContactDate,
 		c.NextContactDate, c.Notes, c.CreatedAt, c.UpdatedAt,
@@ -72,9 +74,9 @@ func (r *CollectionRepository) scan(row interface{ Scan(...interface{}) error })
 }
 
 func (r *CollectionRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.Collection, error) {
-	c, err := r.scan(runner(ctx, r.db).QueryRowContext(ctx,
+	c, err := r.scan(querier(ctx, r.db).QueryRow(ctx,
 		`SELECT `+collectionCols+` FROM collections WHERE id=$1`, id))
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	return c, err
@@ -95,16 +97,16 @@ func (r *CollectionRepository) List(ctx context.Context, userID *uuid.UUID, stat
 		idx++
 	}
 
-	q := runner(ctx, r.db)
+	q := querier(ctx, r.db)
 
 	var total int
-	if err := q.QueryRowContext(ctx,
+	if err := q.QueryRow(ctx,
 		"SELECT COUNT(*) FROM collections "+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	args = append(args, limit, offset)
-	rows, err := q.QueryContext(ctx,
+	rows, err := q.Query(ctx,
 		"SELECT "+collectionCols+" FROM collections "+where+
 			" ORDER BY days_past_due DESC LIMIT $"+itoa(idx)+" OFFSET $"+itoa(idx+1),
 		args...)
@@ -124,16 +126,16 @@ func (r *CollectionRepository) List(ctx context.Context, userID *uuid.UUID, stat
 }
 
 func (r *CollectionRepository) GetActiveByLoanID(ctx context.Context, loanID uuid.UUID) (*entities.Collection, error) {
-	c, err := r.scan(runner(ctx, r.db).QueryRowContext(ctx,
+	c, err := r.scan(querier(ctx, r.db).QueryRow(ctx,
 		`SELECT `+collectionCols+` FROM collections WHERE loan_id=$1 AND status='active'`, loanID))
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	return c, err
 }
 
 func (r *CollectionRepository) Update(ctx context.Context, c *entities.Collection) error {
-	_, err := runner(ctx, r.db).ExecContext(ctx, `
+	_, err := querier(ctx, r.db).Exec(ctx, `
         UPDATE collections SET amount_outstanding=$1, days_past_due=$2,
             status=$3, assigned_to=$4, last_contact_date=$5,
             next_contact_date=$6, notes=$7, updated_at=$8

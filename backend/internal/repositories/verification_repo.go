@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ErrAlreadyConsumed reports a single-use secret lost a consume race:
@@ -16,10 +18,10 @@ var ErrAlreadyConsumed = errors.New("already consumed")
 // VerificationRepository stores single-use email tokens and phone OTPs.
 // Only hashes are persisted; raw tokens/codes live in transit only.
 type VerificationRepository struct {
-	db *sql.DB
+	db *pgxpool.Pool
 }
 
-func NewVerificationRepository(db *sql.DB) *VerificationRepository {
+func NewVerificationRepository(db *pgxpool.Pool) *VerificationRepository {
 	return &VerificationRepository{db: db}
 }
 
@@ -32,7 +34,7 @@ type EmailVerification struct {
 }
 
 func (r *VerificationRepository) CreateEmailToken(ctx context.Context, id, userID uuid.UUID, tokenHash string, expires time.Time) error {
-	_, err := runner(ctx, r.db).ExecContext(ctx,
+	_, err := querier(ctx, r.db).Exec(ctx,
 		`INSERT INTO email_verifications (id, user_id, token_hash, expires_at) VALUES ($1,$2,$3,$4)`,
 		id, userID, tokenHash, expires)
 	return err
@@ -41,11 +43,11 @@ func (r *VerificationRepository) CreateEmailToken(ctx context.Context, id, userI
 func (r *VerificationRepository) GetValidEmailToken(ctx context.Context, tokenHash string, now time.Time) (*EmailVerification, error) {
 	var v EmailVerification
 	var used sql.NullTime
-	err := runner(ctx, r.db).QueryRowContext(ctx,
+	err := querier(ctx, r.db).QueryRow(ctx,
 		`SELECT id, user_id, token_hash, expires_at, used_at FROM email_verifications
          WHERE token_hash=$1 AND expires_at > $2 AND used_at IS NULL`,
 		tokenHash, now).Scan(&v.ID, &v.UserID, &v.TokenHash, &v.ExpiresAt, &used)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
@@ -60,16 +62,12 @@ func (r *VerificationRepository) GetValidEmailToken(ctx context.Context, tokenHa
 func (r *VerificationRepository) MarkEmailUsed(ctx context.Context, id uuid.UUID) error {
 	// Atomic consume: exactly one concurrent request wins; the loser gets
 	// ErrAlreadyConsumed instead of double-spending the token.
-	res, err := runner(ctx, r.db).ExecContext(ctx,
+	res, err := querier(ctx, r.db).Exec(ctx,
 		`UPDATE email_verifications SET used_at=NOW() WHERE id=$1 AND used_at IS NULL`, id)
 	if err != nil {
 		return err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
+	if res.RowsAffected() == 0 {
 		return ErrAlreadyConsumed
 	}
 	return nil
@@ -86,7 +84,7 @@ type PhoneOTP struct {
 }
 
 func (r *VerificationRepository) CreatePhoneOTP(ctx context.Context, id, userID uuid.UUID, codeHash string, expires time.Time) error {
-	_, err := runner(ctx, r.db).ExecContext(ctx,
+	_, err := querier(ctx, r.db).Exec(ctx,
 		`INSERT INTO phone_otps (id, user_id, code_hash, expires_at) VALUES ($1,$2,$3,$4)`,
 		id, userID, codeHash, expires)
 	return err
@@ -96,12 +94,12 @@ func (r *VerificationRepository) CreatePhoneOTP(ctx context.Context, id, userID 
 func (r *VerificationRepository) LatestValidOTP(ctx context.Context, userID uuid.UUID, now time.Time) (*PhoneOTP, error) {
 	var o PhoneOTP
 	var used sql.NullTime
-	err := runner(ctx, r.db).QueryRowContext(ctx,
+	err := querier(ctx, r.db).QueryRow(ctx,
 		`SELECT id, user_id, code_hash, expires_at, attempts, max_attempts, used_at
          FROM phone_otps WHERE user_id=$1 AND expires_at > $2 AND used_at IS NULL
          ORDER BY created_at DESC LIMIT 1`,
 		userID, now).Scan(&o.ID, &o.UserID, &o.CodeHash, &o.ExpiresAt, &o.Attempts, &o.MaxAttempts, &used)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
@@ -114,22 +112,18 @@ func (r *VerificationRepository) LatestValidOTP(ctx context.Context, userID uuid
 }
 
 func (r *VerificationRepository) BumpOTPAttempts(ctx context.Context, id uuid.UUID) error {
-	_, err := runner(ctx, r.db).ExecContext(ctx,
+	_, err := querier(ctx, r.db).Exec(ctx,
 		`UPDATE phone_otps SET attempts = attempts + 1 WHERE id=$1`, id)
 	return err
 }
 
 func (r *VerificationRepository) MarkOTPUsed(ctx context.Context, id uuid.UUID) error {
-	res, err := runner(ctx, r.db).ExecContext(ctx,
+	res, err := querier(ctx, r.db).Exec(ctx,
 		`UPDATE phone_otps SET used_at=NOW() WHERE id=$1 AND used_at IS NULL`, id)
 	if err != nil {
 		return err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
+	if res.RowsAffected() == 0 {
 		return ErrAlreadyConsumed
 	}
 	return nil
@@ -139,7 +133,7 @@ func (r *VerificationRepository) MarkOTPUsed(ctx context.Context, id uuid.UUID) 
 // issued to this user since `since`.
 func (r *VerificationRepository) RecentOTPCount(ctx context.Context, userID uuid.UUID, since time.Time) (int, error) {
 	var n int
-	err := runner(ctx, r.db).QueryRowContext(ctx,
+	err := querier(ctx, r.db).QueryRow(ctx,
 		`SELECT COUNT(*) FROM phone_otps WHERE user_id=$1 AND created_at > $2`,
 		userID, since).Scan(&n)
 	return n, err

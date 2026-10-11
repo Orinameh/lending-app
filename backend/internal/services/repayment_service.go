@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"lending-app/backend/internal/config"
 	"lending-app/backend/internal/domain/entities"
@@ -11,19 +10,21 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 )
 
 type RepaymentService struct {
-	db            *sql.DB
+	db            *pgxpool.Pool
 	repaymentRepo *repositories.RepaymentRepository
+	paymentRepo   *repositories.PaymentRepository
 	loanRepo      *repositories.LoanRepository
 	lateFeeRate   decimal.Decimal
 	lateFeeCap    decimal.Decimal
 }
 
-func NewRepaymentService(db *sql.DB, rr *repositories.RepaymentRepository, lr *repositories.LoanRepository, fees config.Fees) *RepaymentService {
-	return &RepaymentService{db: db, repaymentRepo: rr, loanRepo: lr, lateFeeRate: fees.LateFeeRate, lateFeeCap: fees.LateFeeCap}
+func NewRepaymentService(db *pgxpool.Pool, rr *repositories.RepaymentRepository, pr *repositories.PaymentRepository, lr *repositories.LoanRepository, fees config.Fees) *RepaymentService {
+	return &RepaymentService{db: db, repaymentRepo: rr, paymentRepo: pr, loanRepo: lr, lateFeeRate: fees.LateFeeRate, lateFeeCap: fees.LateFeeCap}
 }
 
 type RepaymentRequest struct {
@@ -70,15 +71,11 @@ func (s *RepaymentService) MakeRepayment(ctx context.Context, userID, loanID uui
 		return nil, errors.New("loan is not in a repayable state")
 	}
 
-	// Idempotency: same transaction id must never double-apply.
-	if exists, err := s.repaymentRepo.ExistsTransaction(ctx, txn); err != nil {
-		return nil, err
-	} else if exists {
-		return nil, errors.New("duplicate transaction id")
-	}
-
-	// ACID + concurrency: serializable tx with retry on 40001/40P01,
+	// ACID + concurrency: ReadCommitted tx with retry on deadlock,
 	// serialized per-loan via advisory xact lock + SELECT ... FOR UPDATE.
+	// Idempotency is the payments-table INSERT itself: concurrent replays
+	// race on the unique transaction_id, so there is no check-then-act
+	// window at all.
 	txCtx, cancel := repositories.WithTxTimeout(ctx)
 	defer cancel()
 	var result *RepaymentResult
@@ -86,11 +83,20 @@ func (s *RepaymentService) MakeRepayment(ctx context.Context, userID, loanID uui
 		if err := repositories.LockTx(txCtx, repositories.LoanLockKey(loanID)); err != nil {
 			return err
 		}
-		// Re-check idempotency INSIDE the tx (TOCTOU safe).
-		if exists, err := s.repaymentRepo.ExistsTransaction(txCtx, txn); err != nil {
+		payment := &entities.Payment{
+			ID:            uuid.New(),
+			LoanID:        loanID,
+			UserID:        userID,
+			Amount:        req.Amount,
+			PaymentMethod: strings.TrimSpace(req.PaymentMethod),
+			TransactionID: txn,
+			Status:        entities.PaymentStatusPending,
+		}
+		if err := s.paymentRepo.Create(txCtx, payment); err != nil {
+			if repositories.IsUniqueViolation(err) {
+				return errors.New("duplicate transaction id")
+			}
 			return err
-		} else if exists {
-			return errors.New("duplicate transaction id")
 		}
 		payments, err := s.repaymentRepo.GetByLoanIDForUpdate(txCtx, loanID)
 		if err != nil {
@@ -181,6 +187,9 @@ func (s *RepaymentService) MakeRepayment(ctx context.Context, userID, loanID uui
 			if err := s.loanRepo.UpdateStatus(txCtx, loanID, entities.LoanStatusRepaid); err != nil {
 				return err
 			}
+		}
+		if err := s.paymentRepo.Settle(txCtx, payment.ID, applied, remaining); err != nil {
+			return err
 		}
 		result = &RepaymentResult{Applied: applied, Overpayment: remaining, Installments: touched}
 		return nil

@@ -2,11 +2,11 @@ package handlers
 
 import (
 	"context"
-	"database/sql"
 	"lending-app/backend/pkg/crypto"
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -14,11 +14,11 @@ var appVersion = "1.0.0"
 
 type HealthHandler struct {
 	encryptor *crypto.EncryptionService
-	db        *sql.DB
+	db        *pgxpool.Pool
 	redis     *redis.Client
 }
 
-func NewHealthHandler(e *crypto.EncryptionService, db *sql.DB, r *redis.Client) *HealthHandler {
+func NewHealthHandler(e *crypto.EncryptionService, db *pgxpool.Pool, r *redis.Client) *HealthHandler {
 	return &HealthHandler{encryptor: e, db: db, redis: r}
 }
 
@@ -27,7 +27,7 @@ func (h *HealthHandler) Check(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	checks := map[string]interface{}{
 		"encryption": h.encryptor.HealthCheck() == nil,
-		"database":   h.db.PingContext(ctx) == nil,
+		"database":   h.db.Ping(ctx) == nil,
 		"redis":      h.redis.Ping(ctx).Err() == nil,
 	}
 	status := http.StatusOK

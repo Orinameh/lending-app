@@ -2,13 +2,13 @@ package services
 
 import (
 	"context"
-	"database/sql"
-	"errors"
+		"errors"
 	"lending-app/backend/internal/domain/entities"
 	"lending-app/backend/internal/repositories"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 )
 
@@ -17,14 +17,14 @@ type CollectionService struct {
 	loanRepo       *repositories.LoanRepository
 	repaymentRepo  *repositories.RepaymentRepository
 	repaymentSvc   *RepaymentService
-	db             *sql.DB
+	db             *pgxpool.Pool
 }
 
 func NewCollectionService(cr *repositories.CollectionRepository, lr *repositories.LoanRepository, rr *repositories.RepaymentRepository) *CollectionService {
 	return &CollectionService{collectionRepo: cr, loanRepo: lr, repaymentRepo: rr}
 }
 
-func (s *CollectionService) WithDB(db *sql.DB) { s.db = db }
+func (s *CollectionService) WithDB(db *pgxpool.Pool) { s.db = db }
 
 func (s *CollectionService) WithRepaymentSvc(rs *RepaymentService) {
 	s.repaymentSvc = rs

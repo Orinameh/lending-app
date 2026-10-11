@@ -44,3 +44,27 @@ func (p *Repayment) BalanceDue() decimal.Decimal {
 	}
 	return due
 }
+
+type PaymentStatus string
+
+const (
+	PaymentStatusPending PaymentStatus = "pending"
+	PaymentStatusApplied PaymentStatus = "applied"
+	PaymentStatusFailed  PaymentStatus = "failed"
+)
+
+// Payment is one payment attempt against a loan. transaction_id is unique
+// per PAYMENT (not per installment row — one payment may span rows).
+type Payment struct {
+	ID            uuid.UUID       `json:"id"`
+	LoanID        uuid.UUID       `json:"loanId"`
+	UserID        uuid.UUID       `json:"userId"`
+	Amount        decimal.Decimal `json:"amount"`
+	Applied       decimal.Decimal `json:"applied"`
+	Overpayment   decimal.Decimal `json:"overpayment"`
+	PaymentMethod string          `json:"paymentMethod"`
+	TransactionID string          `json:"transactionId"`
+	Status        PaymentStatus   `json:"status"`
+	CreatedAt     time.Time       `json:"createdAt"`
+	UpdatedAt     time.Time       `json:"updatedAt"`
+}

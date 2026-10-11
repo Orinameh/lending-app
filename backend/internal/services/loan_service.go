@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"lending-app/backend/internal/config"
 	"lending-app/backend/internal/domain/entities"
@@ -11,11 +10,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 )
 
 type LoanService struct {
-	db            *sql.DB
+	db            *pgxpool.Pool
 	loanRepo      *repositories.LoanRepository
 	creditRepo    *repositories.CreditRepository
 	repaymentRepo *repositories.RepaymentRepository
@@ -24,7 +24,7 @@ type LoanService struct {
 }
 
 func NewLoanService(
-	db *sql.DB,
+	db *pgxpool.Pool,
 	loanRepo *repositories.LoanRepository,
 	creditRepo *repositories.CreditRepository,
 	repaymentRepo *repositories.RepaymentRepository,
@@ -122,9 +122,24 @@ func (s *LoanService) ApplyForLoan(ctx context.Context, userID uuid.UUID, req *L
 	txCtx, cancel := repositories.WithTxTimeout(ctx)
 	defer cancel()
 	var out *entities.Loan
-	// ACID + concurrency: serializable tx with automatic retry on 40001/40P01.
+	// ACID + concurrency: ReadCommitted tx with automatic retry on deadlock.
+	// Correctness rests on the idempotency UNIQUE + explicit locks, not
+	// on snapshot isolation.
 	err = repositories.Transact(txCtx, s.db, func(txCtx context.Context) error {
 		if err := s.loanRepo.Create(txCtx, loan); err != nil {
+			// Lost the idempotency race: a concurrent request inserted
+			// the same key first. Return the winner untouched instead of
+			// 500ing — never fall through and mutate it below.
+			if idem := strings.TrimSpace(req.IdempotencyKey); idem != "" && repositories.IsUniqueViolation(err) {
+				existing, gerr := s.loanRepo.GetByIdempotencyKey(txCtx, idem)
+				if gerr == nil {
+					if existing.UserID != userID {
+						return errors.New("idempotency key conflict")
+					}
+					out = existing
+					return nil
+				}
+			}
 			return err
 		}
 
@@ -157,7 +172,7 @@ func (s *LoanService) ApplyForLoan(ctx context.Context, userID uuid.UUID, req *L
 }
 
 // Disburse moves approved → disbursed, anchors maturity + schedule at funding.
-// ACID: serializable + retried; serialized per-loan via advisory xact lock so
+// ACID: ReadCommitted + retried; serialized per-loan via advisory xact lock so
 // concurrent disburse calls cannot double-create the schedule.
 func (s *LoanService) Disburse(ctx context.Context, loanID uuid.UUID) (*entities.Loan, error) {
 	txCtx, cancel := repositories.WithTxTimeout(ctx)

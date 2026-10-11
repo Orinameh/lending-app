@@ -3,7 +3,7 @@
 A Nigerian fintech lending API in Go: user onboarding with KYC, data-derived
 credit scoring, amortized loans with server-side pricing, a real repayment
 ledger, collections, tamper-evident audit, and versioned key rotation.
-Standard library-first (`net/http`, `database/sql`), Postgres + Redis.
+Stdlib HTTP + pgx, Postgres + Redis.
 
 ```text
 clients
@@ -42,9 +42,11 @@ backend/
                       (body caps, strict JSON, audit metadata, error mapping)
     services/         domain logic — auth, loans, credit, repayments,
                       collections, admin, audit
-    repositories/     SQL — tx.go (tx propagation), db.go (Transact with
-                      retry, advisory locks), one file per aggregate +
-                      refresh/password-reset stores
+    repositories/     SQL over a shared pgx Querier (*pgxpool.Pool and pgx.Tx
+                      both satisfy it, so code runs identically inside or
+                      outside transactions) — tx.go (tx propagation), db.go
+                      (Connect with tuned pool, WithTx, advisory locks,
+                      SQLSTATE translators)
     domain/entities/  types + state machines + allowlists
     middleware/       auth, admin, rate limit, security headers,
                       request ID, access log

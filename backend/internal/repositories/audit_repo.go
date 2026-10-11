@@ -7,13 +7,15 @@ import (
 	"lending-app/backend/internal/domain/entities"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type AuditRepository struct {
-	db *sql.DB
+	db *pgxpool.Pool
 }
 
-func NewAuditRepository(db *sql.DB) *AuditRepository {
+func NewAuditRepository(db *pgxpool.Pool) *AuditRepository {
 	return &AuditRepository{db: db}
 }
 
@@ -28,14 +30,14 @@ func (r *AuditRepository) Create(ctx context.Context, l *entities.AuditLog) erro
             ip_address, user_agent, request_id, created_at
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
     `
-	_, err := runner(ctx, r.db).ExecContext(ctx, q,
+	_, err := querier(ctx, r.db).Exec(ctx, q,
 		l.ID, l.UserID, l.ActorID, l.Action, l.ResourceType, l.ResourceID,
 		details, l.IPAddress, l.UserAgent, nullIfEmpty(l.RequestID), l.CreatedAt)
 	return err
 }
 
 func (r *AuditRepository) ListByUser(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.AuditLog, error) {
-	rows, err := runner(ctx, r.db).QueryContext(ctx, `
+	rows, err := querier(ctx, r.db).Query(ctx, `
         SELECT id, user_id, actor_id, action, resource_type, resource_id, details,
                ip_address, user_agent, request_id, created_at
         FROM audit_logs WHERE user_id=$1
@@ -48,16 +50,16 @@ func (r *AuditRepository) ListByUser(ctx context.Context, userID uuid.UUID, limi
 }
 
 func (r *AuditRepository) List(ctx context.Context, action string, limit, offset int) ([]*entities.AuditLog, error) {
-	var rows *sql.Rows
+	var rows pgx.Rows
 	var err error
 	if action != "" {
-		rows, err = runner(ctx, r.db).QueryContext(ctx, `
+		rows, err = querier(ctx, r.db).Query(ctx, `
             SELECT id, user_id, actor_id, action, resource_type, resource_id, details,
                    ip_address, user_agent, request_id, created_at
             FROM audit_logs WHERE action=$1
             ORDER BY created_at DESC LIMIT $2 OFFSET $3`, action, limit, offset)
 	} else {
-		rows, err = runner(ctx, r.db).QueryContext(ctx, `
+		rows, err = querier(ctx, r.db).Query(ctx, `
             SELECT id, user_id, actor_id, action, resource_type, resource_id, details,
                    ip_address, user_agent, request_id, created_at
             FROM audit_logs
@@ -70,7 +72,7 @@ func (r *AuditRepository) List(ctx context.Context, action string, limit, offset
 	return r.scanList(rows)
 }
 
-func (r *AuditRepository) scanList(rows *sql.Rows) ([]*entities.AuditLog, error) {
+func (r *AuditRepository) scanList(rows pgx.Rows) ([]*entities.AuditLog, error) {
 	var out []*entities.AuditLog
 	for rows.Next() {
 		var l entities.AuditLog

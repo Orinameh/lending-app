@@ -9,14 +9,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 )
 
 type RepaymentRepository struct {
-	db *sql.DB
+	db *pgxpool.Pool
 }
 
-func NewRepaymentRepository(db *sql.DB) *RepaymentRepository {
+func NewRepaymentRepository(db *pgxpool.Pool) *RepaymentRepository {
 	return &RepaymentRepository{db: db}
 }
 
@@ -29,7 +31,7 @@ func (r *RepaymentRepository) Create(ctx context.Context, p *entities.Repayment)
             late_fee, created_at, updated_at
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
     `
-	_, err := runner(ctx, r.db).ExecContext(ctx, q,
+	_, err := querier(ctx, r.db).Exec(ctx, q,
 		p.ID, p.LoanID, p.Amount.String(), p.PrincipalAmount.String(),
 		p.InterestAmount.String(), p.AmountPaid.String(), p.PrincipalPaid.String(),
 		p.InterestPaid.String(), p.FeePaid.String(),
@@ -112,7 +114,7 @@ func (r *RepaymentRepository) scan(row interface{ Scan(...interface{}) error }) 
 }
 
 func (r *RepaymentRepository) GetByLoanID(ctx context.Context, loanID uuid.UUID) ([]*entities.Repayment, error) {
-	rows, err := runner(ctx, r.db).QueryContext(ctx,
+	rows, err := querier(ctx, r.db).Query(ctx,
 		`SELECT `+repaymentCols+` FROM repayments WHERE loan_id=$1 ORDER BY due_date ASC`, loanID)
 	if err != nil {
 		return nil, err
@@ -131,7 +133,7 @@ func (r *RepaymentRepository) GetByLoanID(ctx context.Context, loanID uuid.UUID)
 
 // GetByLoanIDForUpdate locks the schedule rows for a repayment transaction.
 func (r *RepaymentRepository) GetByLoanIDForUpdate(ctx context.Context, loanID uuid.UUID) ([]*entities.Repayment, error) {
-	rows, err := runner(ctx, r.db).QueryContext(ctx,
+	rows, err := querier(ctx, r.db).Query(ctx,
 		`SELECT `+repaymentCols+` FROM repayments WHERE loan_id=$1 ORDER BY due_date ASC FOR UPDATE`, loanID)
 	if err != nil {
 		return nil, err
@@ -148,27 +150,17 @@ func (r *RepaymentRepository) GetByLoanIDForUpdate(ctx context.Context, loanID u
 	return out, nil
 }
 
-func (r *RepaymentRepository) ExistsTransaction(ctx context.Context, txnID string) (bool, error) {
-	if txnID == "" {
-		return false, nil
-	}
-	var n int
-	err := runner(ctx, r.db).QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM repayments WHERE transaction_id=$1`, txnID).Scan(&n)
-	return n > 0, err
-}
-
 func (r *RepaymentRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.Repayment, error) {
-	p, err := r.scan(runner(ctx, r.db).QueryRowContext(ctx,
+	p, err := r.scan(querier(ctx, r.db).QueryRow(ctx,
 		`SELECT `+repaymentCols+` FROM repayments WHERE id=$1`, id))
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	return p, err
 }
 
 func (r *RepaymentRepository) Update(ctx context.Context, p *entities.Repayment) error {
-	_, err := runner(ctx, r.db).ExecContext(ctx, `
+	_, err := querier(ctx, r.db).Exec(ctx, `
         UPDATE repayments SET status=$1, payment_date=$2, payment_method=$3,
             transaction_id=$4, late_fee=$5, amount_paid=$6, principal_paid=$7,
             interest_paid=$8, fee_paid=$9, updated_at=$10 WHERE id=$11`,

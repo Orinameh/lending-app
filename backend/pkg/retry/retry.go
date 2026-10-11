@@ -7,7 +7,7 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Retriable reports whether err is a transient Postgres failure worth
@@ -18,9 +18,9 @@ func Retriable(err error) bool {
 	if err == nil {
 		return false
 	}
-	var pqErr *pq.Error
-	if errors.As(err, &pqErr) {
-		switch pqErr.Code {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
 		case "40001", "40P01", "55P03", "57014",
 			"08000", "08003", "08006", "08001", "08004", "08P01",
 			"53000", "53100", "53200", "53300":
@@ -28,7 +28,7 @@ func Retriable(err error) bool {
 		}
 		return false
 	}
-	// database/sql wraps driver errors opaquely; match common substrings.
+	// Fallback for wrapped/pooled errors that lost their PgError shape.
 	msg := err.Error()
 	for _, s := range []string{
 		"connection refused", "connection reset", "broken pipe",

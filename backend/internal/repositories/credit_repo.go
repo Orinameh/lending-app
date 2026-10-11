@@ -2,21 +2,22 @@ package repositories
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"lending-app/backend/internal/domain/entities"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 )
 
 type CreditRepository struct {
-	db *sql.DB
+	db *pgxpool.Pool
 }
 
-func NewCreditRepository(db *sql.DB) *CreditRepository {
+func NewCreditRepository(db *pgxpool.Pool) *CreditRepository {
 	return &CreditRepository{db: db}
 }
 
@@ -29,7 +30,7 @@ func (r *CreditRepository) Create(ctx context.Context, cr *entities.CreditReport
             report_date, created_at, updated_at
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
     `
-	_, err := runner(ctx, r.db).ExecContext(ctx, q,
+	_, err := querier(ctx, r.db).Exec(ctx, q,
 		cr.ID, cr.UserID, cr.Score, cr.Rating,
 		cr.TotalDebt.String(), cr.AvailableCredit.String(),
 		cr.CreditUtilization.String(), cr.PaymentHistory.String(),
@@ -58,13 +59,13 @@ func (r *CreditRepository) GetLatestByUserID(ctx context.Context, userID uuid.UU
     `
 	var cr entities.CreditReport
 	var totalDebt, availCredit, util, hist string
-	err := runner(ctx, r.db).QueryRowContext(ctx, q, userID).Scan(
+	err := querier(ctx, r.db).QueryRow(ctx, q, userID).Scan(
 		&cr.ID, &cr.UserID, &cr.Score, &cr.Rating,
 		&totalDebt, &availCredit, &util, &hist,
 		&cr.CreditAgeMonths, &cr.NumAccounts, &cr.HardInquiries,
 		&cr.DelinquentAccounts, &cr.ReportDate, &cr.CreatedAt, &cr.UpdatedAt,
 	)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
@@ -87,7 +88,7 @@ func (r *CreditRepository) GetLatestByUserID(ctx context.Context, userID uuid.UU
 }
 
 func (r *CreditRepository) GetHistory(ctx context.Context, userID uuid.UUID, limit int) ([]*entities.CreditReport, error) {
-	rows, err := runner(ctx, r.db).QueryContext(ctx, `
+	rows, err := querier(ctx, r.db).Query(ctx, `
         SELECT id, user_id, score, rating, total_debt, available_credit,
                credit_utilization, payment_history, credit_age_months,
                num_accounts, hard_inquiries, delinquent_accounts,
@@ -130,7 +131,7 @@ func (r *CreditRepository) GetHistory(ctx context.Context, userID uuid.UUID, lim
 
 func (r *CreditRepository) MarkStale(ctx context.Context, userID uuid.UUID) error {
 	// No-op for now — could set a flag to force refresh
-	_, err := runner(ctx, r.db).ExecContext(ctx,
+	_, err := querier(ctx, r.db).Exec(ctx,
 		`UPDATE credit_reports SET updated_at=$1 WHERE user_id=$2`,
 		time.Now().UTC(), userID)
 	return err

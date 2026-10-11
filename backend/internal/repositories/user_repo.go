@@ -11,17 +11,19 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 )
 
 var ErrNotFound = errors.New("not found")
 
 type UserRepository struct {
-	db        *sql.DB
+	db        *pgxpool.Pool
 	encryptor *crypto.EncryptionService
 }
 
-func NewUserRepository(db *sql.DB, encryptor *crypto.EncryptionService) *UserRepository {
+func NewUserRepository(db *pgxpool.Pool, encryptor *crypto.EncryptionService) *UserRepository {
 	return &UserRepository{db: db, encryptor: encryptor}
 }
 
@@ -112,7 +114,7 @@ func (r *UserRepository) Create(ctx context.Context, u *entities.User) error {
             is_active, created_at, updated_at
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
     `
-	_, err = runner(ctx, r.db).ExecContext(ctx, q,
+	_, err = querier(ctx, r.db).Exec(ctx, q,
 		u.ID, email, emailHMAC, u.PasswordHash, fn, ln, ph, phoneHMAC,
 		bvn, bvnHMAC, nin, ninHMAC,
 		addr, city, state, u.DateOfBirth, u.Country, u.Currency, u.EmploymentType,
@@ -203,8 +205,8 @@ func (r *UserRepository) scan(row interface{ Scan(...interface{}) error }) (*ent
 
 func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.User, error) {
 	q := `SELECT ` + userCols + ` FROM users WHERE id = $1 AND deleted_at IS NULL`
-	u, err := r.scan(runner(ctx, r.db).QueryRowContext(ctx, q, id))
-	if errors.Is(err, sql.ErrNoRows) {
+	u, err := r.scan(querier(ctx, r.db).QueryRow(ctx, q, id))
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	return u, err
@@ -213,17 +215,17 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*entities.User, error) {
 	h := r.encryptor.HMAC(NormalizeEmail(email))
 	q := `SELECT ` + userCols + ` FROM users WHERE email_hmac = $1 AND deleted_at IS NULL`
-	u, err := r.scan(runner(ctx, r.db).QueryRowContext(ctx, q, h))
+	u, err := r.scan(querier(ctx, r.db).QueryRow(ctx, q, h))
 	if err == nil {
 		return u, nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
 	// Rotation window: retry under the previous HMAC key.
 	if prev, ok := r.encryptor.HMACPrevious(NormalizeEmail(email)); ok {
-		u, err := r.scan(runner(ctx, r.db).QueryRowContext(ctx, q, prev))
-		if errors.Is(err, sql.ErrNoRows) {
+		u, err := r.scan(querier(ctx, r.db).QueryRow(ctx, q, prev))
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return u, err
@@ -285,7 +287,7 @@ func (r *UserRepository) UpdatePII(ctx context.Context, u *entities.User) error 
 	if strings.TrimSpace(u.NIN.Plain) != "" {
 		ninHMAC = sql.NullString{String: r.encryptor.HMAC(strings.TrimSpace(u.NIN.Plain)), Valid: true}
 	}
-	_, err = runner(ctx, r.db).ExecContext(ctx, `
+	_, err = querier(ctx, r.db).Exec(ctx, `
         UPDATE users SET email=$1, email_hmac=$2, first_name=$3, last_name=$4,
             phone=$5, phone_hmac=$6, bvn=$7, bvn_hmac=$8, nin=$9, nin_hmac=$10,
             address=$11, city=$12, state=$13, updated_at=$14
@@ -317,7 +319,7 @@ func (r *UserRepository) Update(ctx context.Context, u *entities.User) error {
 	if strings.TrimSpace(u.Phone.Plain) != "" {
 		phoneHMAC = sql.NullString{String: r.encryptor.HMAC(strings.TrimSpace(u.Phone.Plain)), Valid: true}
 	}
-	_, err = runner(ctx, r.db).ExecContext(ctx, `
+	_, err = querier(ctx, r.db).Exec(ctx, `
         UPDATE users SET phone=$1, phone_hmac=$2, address=$3, city=$4, state=$5,
             employment_type=$6, annual_income=$7, phone_verified=$8,
             phone_verified_at=$9, updated_at=$10
@@ -336,7 +338,7 @@ func toNullTime(t *time.Time) sql.NullTime {
 }
 
 func (r *UserRepository) UpdatePassword(ctx context.Context, id uuid.UUID, hash string) error {
-	_, err := runner(ctx, r.db).ExecContext(ctx,
+	_, err := querier(ctx, r.db).Exec(ctx,
 		`UPDATE users SET password_hash=$1, updated_at=$2 WHERE id=$3 AND deleted_at IS NULL`,
 		hash, time.Now().UTC(), id)
 	return err
@@ -346,7 +348,7 @@ func (r *UserRepository) SetEmailVerified(ctx context.Context, id uuid.UUID, ver
 	// verified_at is set exactly once per transition to true (preserved on
 	// repeat calls); cleared on revocation. This is the compliance record
 	// proving verification preceded any disbursement.
-	_, err := runner(ctx, r.db).ExecContext(ctx,
+	_, err := querier(ctx, r.db).Exec(ctx,
 		`UPDATE users SET email_verified=$1,
             email_verified_at = CASE WHEN $1 AND email_verified_at IS NULL
                 THEN NOW() WHEN NOT $1 THEN NULL
@@ -357,7 +359,7 @@ func (r *UserRepository) SetEmailVerified(ctx context.Context, id uuid.UUID, ver
 }
 
 func (r *UserRepository) SetPhoneVerified(ctx context.Context, id uuid.UUID, verified bool) error {
-	_, err := runner(ctx, r.db).ExecContext(ctx,
+	_, err := querier(ctx, r.db).Exec(ctx,
 		`UPDATE users SET phone_verified=$1,
             phone_verified_at = CASE WHEN $1 AND phone_verified_at IS NULL
                 THEN NOW() WHEN NOT $1 THEN NULL
@@ -371,14 +373,14 @@ func (r *UserRepository) UpdateKYCStatus(ctx context.Context, id uuid.UUID, stat
 	if !entities.ValidKYCStatuses[status] {
 		return fmt.Errorf("invalid kyc status: %s", status)
 	}
-	_, err := runner(ctx, r.db).ExecContext(ctx,
+	_, err := querier(ctx, r.db).Exec(ctx,
 		`UPDATE users SET kyc_status=$1, updated_at=$2 WHERE id=$3 AND deleted_at IS NULL`,
 		status, time.Now().UTC(), id)
 	return err
 }
 
 func (r *UserRepository) UpdateStatus(ctx context.Context, id uuid.UUID, active bool) error {
-	_, err := runner(ctx, r.db).ExecContext(ctx,
+	_, err := querier(ctx, r.db).Exec(ctx,
 		`UPDATE users SET is_active=$1, updated_at=$2 WHERE id=$3 AND deleted_at IS NULL`,
 		active, time.Now().UTC(), id)
 	return err
@@ -388,7 +390,7 @@ func (r *UserRepository) UpdateRole(ctx context.Context, id uuid.UUID, role stri
 	if !entities.ValidRoles[role] {
 		return fmt.Errorf("invalid role: %s", role)
 	}
-	_, err := runner(ctx, r.db).ExecContext(ctx,
+	_, err := querier(ctx, r.db).Exec(ctx,
 		`UPDATE users SET role=$1, updated_at=$2 WHERE id=$3 AND deleted_at IS NULL`,
 		role, time.Now().UTC(), id)
 	return err
@@ -396,10 +398,10 @@ func (r *UserRepository) UpdateRole(ctx context.Context, id uuid.UUID, role stri
 
 func (r *UserRepository) List(ctx context.Context, limit, offset int) ([]*entities.User, int, error) {
 	var total int
-	if err := runner(ctx, r.db).QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE deleted_at IS NULL`).Scan(&total); err != nil {
+	if err := querier(ctx, r.db).QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE deleted_at IS NULL`).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := runner(ctx, r.db).QueryContext(ctx,
+	rows, err := querier(ctx, r.db).Query(ctx,
 		`SELECT `+userCols+` FROM users WHERE deleted_at IS NULL
          ORDER BY created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {

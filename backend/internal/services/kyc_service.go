@@ -139,6 +139,9 @@ func (s *KYCService) Submit(ctx context.Context, userID uuid.UUID, req *KYCSubmi
 			doc.Status = "rejected"
 			doc.RejectionReason = res.Reason
 			if err := s.kyc.Create(ctx, doc); err != nil {
+				if repositories.IsUniqueViolation(err) {
+					return nil, fmt.Errorf("%w: a review for this document is already in progress", ErrKYCConflict)
+				}
 				return nil, err
 			}
 			_ = s.user.UpdateKYCStatus(ctx, userID, "rejected")
@@ -147,6 +150,9 @@ func (s *KYCService) Submit(ctx context.Context, userID uuid.UUID, req *KYCSubmi
 		}
 	}
 	if err := s.kyc.Create(ctx, doc); err != nil {
+		if repositories.IsUniqueViolation(err) {
+			return nil, fmt.Errorf("%w: a review for this document is already in progress", ErrKYCConflict)
+		}
 		return nil, err
 	}
 	doc.DocumentNumber = number // respond with plaintext, store ciphertext

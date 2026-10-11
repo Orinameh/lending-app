@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"flag"
 	"fmt"
 	"lending-app/backend/internal/api"
@@ -24,14 +23,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 	"github.com/redis/go-redis/v9"
-
-	_ "github.com/lib/pq"
 )
 
 type App struct {
-	db     *sql.DB
+	db     *pgxpool.Pool
 	redis  *redis.Client
 	logger *logger.Logger
 	router *http.ServeMux
@@ -197,38 +196,31 @@ func main() {
 
 func (app *App) initDB(cfg *Config) error {
 	connStr := fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s connect_timeout=5 statement_timeout=8000",
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s connect_timeout=5",
 		cfg.DBHost, cfg.DBPort, cfg.DBUser,
 		cfg.DBPassword, cfg.DBName, cfg.DBSSLMode,
 	)
-	db, err := sql.Open("postgres", connStr)
-	if err != nil {
-		return err
-	}
-	// Pool sized for a small API; fail fast on saturation instead of
-	// queueing forever (failover: surfacing errors beats wedging).
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(30 * time.Minute)
-	db.SetConnMaxIdleTime(5 * time.Minute)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	// Retry initial connect across DB restarts/failover (up to ~30s).
-	var pingErr error
+	// Retry initial connect across DB restarts/failover.
+	var pool *pgxpool.Pool
+	var err error
 	for i := 0; i < 6; i++ {
-		if pingErr = db.PingContext(ctx); pingErr == nil {
+		pool, err = repositories.Connect(ctx, connStr, 20)
+		if err == nil {
 			break
 		}
+		app.logger.Info("db connect retry", "attempt", i+1, "error", err)
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("db ping: %w", pingErr)
+			return fmt.Errorf("db connect: %w", err)
 		case <-time.After(time.Duration(i+1) * time.Second):
 		}
 	}
-	if pingErr != nil {
-		return fmt.Errorf("db ping: %w", pingErr)
+	if err != nil {
+		return err
 	}
-	app.db = db
+	app.db = pool
 	app.logger.Info("database connected")
 	return nil
 }
@@ -253,7 +245,11 @@ func (app *App) runMigrations(_ *Config) error {
 	if err != nil {
 		return err
 	}
-	if err := goose.Up(app.db, dir); err != nil {
+	// goose runs on database/sql: bridge the pool via pgx stdlib. The pool
+	// remains the single connection owner; this handle is migration-only.
+	sqlDB := stdlib.OpenDBFromPool(app.db)
+	defer sqlDB.Close()
+	if err := goose.Up(sqlDB, dir); err != nil {
 		return err
 	}
 	app.logger.Info("migrations applied", "dir", dir)
@@ -324,6 +320,7 @@ func (app *App) setupRoutes(cfg *Config) {
 	loanRepo := repositories.NewLoanRepository(app.db)
 	creditRepo := repositories.NewCreditRepository(app.db)
 	repaymentRepo := repositories.NewRepaymentRepository(app.db)
+	paymentRepo := repositories.NewPaymentRepository(app.db)
 	collectionRepo := repositories.NewCollectionRepository(app.db)
 	auditRepo := repositories.NewAuditRepository(app.db)
 	refreshRepo := repositories.NewRefreshTokenRepository(app.db)
@@ -343,7 +340,7 @@ func (app *App) setupRoutes(cfg *Config) {
 	kycSvc := services.NewKYCService(kycRepo, userRepo, identity.FakeProvider{}, app.encryptor)
 	loanSvc := services.NewLoanService(app.db, loanRepo, creditRepo, repaymentRepo, userRepo, app.policy.Pricing)
 	creditSvc := services.NewCreditService(creditRepo, userRepo, loanRepo, repaymentRepo)
-	repaymentSvc := services.NewRepaymentService(app.db, repaymentRepo, loanRepo, app.policy.Fees)
+	repaymentSvc := services.NewRepaymentService(app.db, repaymentRepo, paymentRepo, loanRepo, app.policy.Fees)
 	collectionSvc := services.NewCollectionService(collectionRepo, loanRepo, repaymentRepo)
 	collectionSvc.WithDB(app.db)
 	collectionSvc.WithRepaymentSvc(repaymentSvc)

@@ -9,14 +9,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 )
 
 type LoanRepository struct {
-	db *sql.DB
+	db *pgxpool.Pool
 }
 
-func NewLoanRepository(db *sql.DB) *LoanRepository {
+func NewLoanRepository(db *pgxpool.Pool) *LoanRepository {
 	return &LoanRepository{db: db}
 }
 
@@ -30,7 +32,7 @@ func (r *LoanRepository) Create(ctx context.Context, l *entities.Loan) error {
             credit_decision, created_at, updated_at
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
     `
-	_, err := runner(ctx, r.db).ExecContext(ctx, q,
+	_, err := querier(ctx, r.db).Exec(ctx, q,
 		l.ID, l.UserID, l.Amount.String(), l.InterestRate.String(), l.EffectiveAPR.String(), l.TermMonths,
 		l.Purpose, l.Status, l.Currency, nullIfEmpty(l.IdempotencyKey),
 		l.ApplicationDate, l.ApprovalDate, l.DisbursementDate,
@@ -117,8 +119,8 @@ func (r *LoanRepository) scan(row interface{ Scan(...interface{}) error }) (*ent
 
 func (r *LoanRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.Loan, error) {
 	q := `SELECT ` + loanCols + ` FROM loans WHERE id=$1 AND deleted_at IS NULL`
-	l, err := r.scan(runner(ctx, r.db).QueryRowContext(ctx, q, id))
-	if errors.Is(err, sql.ErrNoRows) {
+	l, err := r.scan(querier(ctx, r.db).QueryRow(ctx, q, id))
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	return l, err
@@ -129,21 +131,21 @@ func (r *LoanRepository) GetByIdempotencyKey(ctx context.Context, key string) (*
 		return nil, ErrNotFound
 	}
 	q := `SELECT ` + loanCols + ` FROM loans WHERE idempotency_key=$1 AND deleted_at IS NULL`
-	l, err := r.scan(runner(ctx, r.db).QueryRowContext(ctx, q, key))
-	if errors.Is(err, sql.ErrNoRows) {
+	l, err := r.scan(querier(ctx, r.db).QueryRow(ctx, q, key))
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	return l, err
 }
 
 func (r *LoanRepository) GetUserLoans(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Loan, int, error) {
-	q := runner(ctx, r.db)
+	q := querier(ctx, r.db)
 	var total int
-	if err := q.QueryRowContext(ctx,
+	if err := q.QueryRow(ctx,
 		`SELECT COUNT(*) FROM loans WHERE user_id=$1 AND deleted_at IS NULL`, userID).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := q.QueryContext(ctx,
+	rows, err := q.Query(ctx,
 		`SELECT `+loanCols+` FROM loans WHERE user_id=$1 AND deleted_at IS NULL
          ORDER BY created_at DESC LIMIT $2 OFFSET $3`, userID, limit, offset)
 	if err != nil {
@@ -162,27 +164,27 @@ func (r *LoanRepository) GetUserLoans(ctx context.Context, userID uuid.UUID, lim
 }
 
 func (r *LoanRepository) List(ctx context.Context, status string, limit, offset int) ([]*entities.Loan, int, error) {
-	q := runner(ctx, r.db)
+	q := querier(ctx, r.db)
 	var total int
 	var err error
 	if status != "" {
-		err = q.QueryRowContext(ctx,
+		err = q.QueryRow(ctx,
 			`SELECT COUNT(*) FROM loans WHERE status=$1 AND deleted_at IS NULL`, status).Scan(&total)
 	} else {
-		err = q.QueryRowContext(ctx,
+		err = q.QueryRow(ctx,
 			`SELECT COUNT(*) FROM loans WHERE deleted_at IS NULL`).Scan(&total)
 	}
 	if err != nil {
 		return nil, 0, err
 	}
 
-	var rows *sql.Rows
+	var rows pgx.Rows
 	if status != "" {
-		rows, err = q.QueryContext(ctx,
+		rows, err = q.Query(ctx,
 			`SELECT `+loanCols+` FROM loans WHERE status=$1 AND deleted_at IS NULL
              ORDER BY created_at DESC LIMIT $2 OFFSET $3`, status, limit, offset)
 	} else {
-		rows, err = q.QueryContext(ctx,
+		rows, err = q.Query(ctx,
 			`SELECT `+loanCols+` FROM loans WHERE deleted_at IS NULL
              ORDER BY created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
 	}
@@ -208,7 +210,7 @@ func (r *LoanRepository) Update(ctx context.Context, l *entities.Loan) error {
             effective_apr=$8, risk_score=$9, credit_decision=$10, updated_at=$11
         WHERE id=$12 AND deleted_at IS NULL
     `
-	_, err := runner(ctx, r.db).ExecContext(ctx, q,
+	_, err := querier(ctx, r.db).Exec(ctx, q,
 		l.Status, l.ApprovalDate, l.DisbursementDate, l.MaturityDate,
 		l.MonthlyPayment.String(), l.TotalPayment.String(), l.TotalInterest.String(),
 		l.EffectiveAPR.String(), l.RiskScore,
@@ -220,21 +222,20 @@ func (r *LoanRepository) Update(ctx context.Context, l *entities.Loan) error {
 // UPDATE ... WHERE id=$ AND status=$expected. Returns ErrNotFound if the
 // row is missing or already moved (concurrent transition).
 func (r *LoanRepository) UpdateStatusConditional(ctx context.Context, id uuid.UUID, from, to entities.LoanStatus) error {
-	res, err := runner(ctx, r.db).ExecContext(ctx,
+	res, err := querier(ctx, r.db).Exec(ctx,
 		`UPDATE loans SET status=$1, updated_at=$2 WHERE id=$3 AND status=$4 AND deleted_at IS NULL`,
 		to, time.Now().UTC(), id, from)
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
+	if res.RowsAffected() == 0 {
 		return ErrNotFound
 	}
 	return nil
 }
 
 func (r *LoanRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status entities.LoanStatus) error {
-	_, err := runner(ctx, r.db).ExecContext(ctx,
+	_, err := querier(ctx, r.db).Exec(ctx,
 		`UPDATE loans SET status=$1, updated_at=$2 WHERE id=$3 AND deleted_at IS NULL`,
 		status, time.Now().UTC(), id)
 	return err
@@ -242,7 +243,7 @@ func (r *LoanRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status 
 
 // GetOverdueLoans is used by the collections service
 func (r *LoanRepository) GetOverdueLoans(ctx context.Context, limit int) ([]*entities.Loan, error) {
-	rows, err := runner(ctx, r.db).QueryContext(ctx,
+	rows, err := querier(ctx, r.db).Query(ctx,
 		`SELECT `+loanCols+` FROM loans
          WHERE status IN ('disbursed','approved') AND maturity_date < $1 AND deleted_at IS NULL
          ORDER BY maturity_date ASC LIMIT $2`,
@@ -265,7 +266,7 @@ func (r *LoanRepository) GetOverdueLoans(ctx context.Context, limit int) ([]*ent
 // GetOverdueInstallments returns disbursed/approved loans having at least one
 // unpaid installment past due — the correct DPD grain (per-installment).
 func (r *LoanRepository) GetOverdueInstallments(ctx context.Context, now time.Time, limit int) ([]*entities.Loan, error) {
-	rows, err := runner(ctx, r.db).QueryContext(ctx,
+	rows, err := querier(ctx, r.db).Query(ctx,
 		`SELECT DISTINCT l.id, l.user_id, l.amount, l.interest_rate, l.effective_apr,
          l.term_months, l.purpose, l.status, l.currency, l.idempotency_key,
          l.application_date, l.approval_date, l.disbursement_date, l.maturity_date,

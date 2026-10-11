@@ -9,13 +9,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type KYCRepository struct {
-	db *sql.DB
+	db *pgxpool.Pool
 }
 
-func NewKYCRepository(db *sql.DB) *KYCRepository {
+func NewKYCRepository(db *pgxpool.Pool) *KYCRepository {
 	return &KYCRepository{db: db}
 }
 
@@ -78,7 +80,7 @@ func (r *KYCRepository) Create(ctx context.Context, d *entities.KYCDocument) err
 	if d.ProviderResponse != nil {
 		providerResp = []byte(d.ProviderResponse)
 	}
-	_, err := runner(ctx, r.db).ExecContext(ctx,
+	_, err := querier(ctx, r.db).Exec(ctx,
 		`INSERT INTO kyc_documents (
             id, user_id, document_type, document_number, document_hmac, issuing_authority,
             expiry_date, file_path, status, rejection_reason, verified_by,
@@ -92,10 +94,10 @@ func (r *KYCRepository) Create(ctx context.Context, d *entities.KYCDocument) err
 }
 
 func (r *KYCRepository) GetByUserAndType(ctx context.Context, userID uuid.UUID, docType string) (*entities.KYCDocument, error) {
-	d, err := r.scan(runner(ctx, r.db).QueryRowContext(ctx,
+	d, err := r.scan(querier(ctx, r.db).QueryRow(ctx,
 		`SELECT `+kycCols+` FROM kyc_documents WHERE user_id=$1 AND document_type=$2
          ORDER BY created_at DESC LIMIT 1`, userID, docType))
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	return d, err
@@ -105,19 +107,19 @@ func (r *KYCRepository) GetActiveByDocHMAC(ctx context.Context, hmac, docType st
 	if hmac == "" || docType == "" {
 		return nil, ErrNotFound
 	}
-	d, err := r.scan(runner(ctx, r.db).QueryRowContext(ctx,
+	d, err := r.scan(querier(ctx, r.db).QueryRow(ctx,
 		`SELECT `+kycCols+` FROM kyc_documents
          WHERE document_hmac=$1 AND document_type=$2
            AND status NOT IN ('rejected','expired')
          ORDER BY created_at DESC LIMIT 1`, hmac, docType))
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	return d, err
 }
 
 func (r *KYCRepository) ListByUser(ctx context.Context, userID uuid.UUID) ([]*entities.KYCDocument, error) {
-	rows, err := runner(ctx, r.db).QueryContext(ctx,
+	rows, err := querier(ctx, r.db).Query(ctx,
 		`SELECT `+kycCols+` FROM kyc_documents WHERE user_id=$1 ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -143,7 +145,7 @@ func (r *KYCRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status, 
 		now := time.Now().UTC()
 		verifiedAt = &now
 	}
-	_, err := runner(ctx, r.db).ExecContext(ctx,
+	_, err := querier(ctx, r.db).Exec(ctx,
 		`UPDATE kyc_documents SET status=$1, rejection_reason=$2, verified_by=$3,
             verified_at=$4, updated_at=$5 WHERE id=$6`,
 		status, nullStr(reason), verifiedBy, verifiedAt, time.Now().UTC(), id)
